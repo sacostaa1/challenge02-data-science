@@ -97,7 +97,7 @@ def safe_numeric(series: pd.Series) -> pd.Series:
 def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
     """
     Hallazgos de negocio (robustos a tipos object).
-    OJO: Solo diagnóstico, NO limpia nada.
+    Solo diagnóstico (no limpia).
     """
     findings = []
 
@@ -124,7 +124,7 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             add("Fechas inválidas (Ultima_Revision)", invalid, "No parseables a datetime")
 
         if "Lead_Time_Dias" in df.columns:
-            lt = safe_numeric(df["Lead_Time_Dias"])  # <- FIX del error
+            lt = safe_numeric(df["Lead_Time_Dias"])
             extreme = int((lt > 365).sum())
             add("Lead Time extremo (>365 días)", extreme, "Valores logísticos sospechosos")
 
@@ -161,6 +161,94 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
         add("Duplicados detectados", dup, "Pueden ser intencionales, revisar criterio")
 
     return pd.DataFrame(findings)
+
+
+# =========================
+#     CLEANING + ETHICS
+# =========================
+def justify_imputation(col_data: pd.Series):
+    """
+    Decide Media/Mediana/Moda y justifica.
+    - Numérica: skewness decide media vs mediana
+    - Categórica: moda
+    """
+    if pd.api.types.is_numeric_dtype(col_data):
+        skewness = col_data.dropna().skew()
+        if pd.isna(skewness):
+            return "Mediana", "No se pudo estimar skewness (pocos datos). Se usa Mediana por robustez."
+        if abs(skewness) < 0.5:
+            return "Media", f"Distribución aproximadamente simétrica (skew: {skewness:.2f})"
+        return "Mediana", f"Distribución sesgada (skew: {skewness:.2f})"
+
+    return "Moda", "Variable categórica (se imputa con el valor más frecuente)"
+
+
+def clean_dataset(df: pd.DataFrame):
+    """
+    Limpieza base:
+    1) elimina duplicados exactos
+    2) imputación de nulos (media/mediana/moda)
+    Retorna:
+    - df_clean
+    - decision_log (ética)
+    - resumen_limpieza
+    """
+    decision_log = []
+    resumen = {}
+
+    before_rows = len(df)
+    dup_count = int(df.duplicated().sum())
+
+    # 1) Eliminar duplicados exactos
+    df_clean = df.drop_duplicates().copy()
+    after_dup_rows = len(df_clean)
+
+    resumen["filas_iniciales"] = before_rows
+    resumen["duplicados_detectados"] = dup_count
+    resumen["duplicados_eliminados"] = before_rows - after_dup_rows
+
+    if dup_count > 0:
+        decision_log.append({
+            "Acción": "Eliminar registros",
+            "Columna": "(todas)",
+            "Qué se hizo": f"Se eliminaron duplicados exactos (drop_duplicates)",
+            "Cantidad": resumen["duplicados_eliminados"],
+            "Justificación": "Registros repetidos inflan métricas y sesgan análisis; se conserva 1 copia."
+        })
+
+    # 2) Imputación de nulos
+    imputations = 0
+    for col in df_clean.columns:
+        nulls = int(df_clean[col].isna().sum())
+        if nulls == 0:
+            continue
+
+        metodo, razon = justify_imputation(df_clean[col])
+
+        if metodo == "Media":
+            fill_val = df_clean[col].mean()
+        elif metodo == "Mediana":
+            fill_val = df_clean[col].median()
+        else:
+            # Moda: si está todo nulo, mode() falla
+            mode_vals = df_clean[col].mode(dropna=True)
+            fill_val = mode_vals.iloc[0] if len(mode_vals) > 0 else "DESCONOCIDO"
+
+        df_clean[col] = df_clean[col].fillna(fill_val)
+        imputations += nulls
+
+        decision_log.append({
+            "Acción": "Imputar nulos",
+            "Columna": col,
+            "Qué se hizo": f"Se imputaron {nulls} valores nulos con {metodo}",
+            "Cantidad": nulls,
+            "Justificación": razon
+        })
+
+    resumen["valores_imputados_total"] = imputations
+    resumen["columnas_imputadas"] = int((df.isna().sum() > 0).sum())
+
+    return df_clean, pd.DataFrame(decision_log), resumen
 
 
 # =========================
@@ -215,7 +303,7 @@ def detect_bodega_candidates(df):
 # =========================
 #         UI SIDEBAR
 # =========================
-st.title("🛡️ Data Healthcheck Pro (Métricas Iniciales)")
+st.title("🛡️ Data Healthcheck Pro (Métricas + Limpieza + Ética)")
 
 with st.sidebar:
     st.title("📂 Panel de Control")
@@ -314,7 +402,7 @@ with st.sidebar:
 #        MAIN BODY
 # =========================
 if not uploaded_files:
-    st.info("👈 Sube los archivos para generar métricas de Healthcheck.")
+    st.info("👈 Sube los archivos para generar métricas de Healthcheck y limpiar.")
     st.stop()
 
 # Referencia inventario para integridad referencial
@@ -328,7 +416,7 @@ for f in uploaded_files:
             inventory_ref = None
         break
 
-st.subheader("🧾 Métricas Iniciales de Calidad (Healthcheck)")
+st.subheader("🧾 Healthcheck + Limpieza + Decisión Ética")
 
 for file in uploaded_files[:3]:
     st.header(f"Dataset: {file.name}")
@@ -364,7 +452,10 @@ for file in uploaded_files[:3]:
     if f.get('bod_sel'):
         df_filtered = df_filtered[df_filtered[f['bod_col']].isin(f['bod_sel'])]
 
-    # Healthcheck
+    # =========================
+    # 1) HEALTHCHECK (ANTES)
+    # =========================
+    st.subheader("🔍 Healthcheck (Antes)")
     report, resumen = get_healthcheck_report(df_filtered)
 
     m1, m2, m3, m4 = st.columns(4)
@@ -373,9 +464,9 @@ for file in uploaded_files[:3]:
     m3.metric("Duplicados", resumen["duplicados"])
     m4.metric("% Nulos total", f'{resumen["pct_nulos_total"]}%')
 
-    st.subheader("📌 Métricas por columna (Nulidad, Outliers, Tipos)")
     st.dataframe(report, use_container_width=True)
 
+    # Hallazgos de negocio
     st.subheader("🧠 Hallazgos de negocio")
     findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
 
@@ -383,5 +474,46 @@ for file in uploaded_files[:3]:
         st.success("No se detectaron hallazgos de negocio con las reglas actuales.")
     else:
         st.dataframe(findings, use_container_width=True)
+
+    # =========================
+    # 2) LIMPIEZA
+    # =========================
+    st.subheader("🧼 Limpieza automática (Base)")
+    df_clean, ethics_log, resumen_limpieza = clean_dataset(df_filtered)
+
+    a, b, c = st.columns(3)
+    a.metric("Filas iniciales", resumen_limpieza["filas_iniciales"])
+    b.metric("Duplicados eliminados", resumen_limpieza["duplicados_eliminados"])
+    c.metric("Valores imputados", resumen_limpieza["valores_imputados_total"])
+
+    # =========================
+    # 3) DECISIÓN ÉTICA
+    # =========================
+    st.info("### ⚖️ Decisión Ética: ¿Qué se eliminó y qué se imputó?")
+    if ethics_log.empty:
+        st.write("No se realizaron eliminaciones ni imputaciones en este dataset.")
+    else:
+        st.dataframe(ethics_log, use_container_width=True)
+
+    st.caption(
+        "📌 Criterio de imputación: "
+        "Media si la distribución es aproximadamente simétrica (|skew| < 0.5), "
+        "Mediana si es sesgada, Moda si es categórica."
+    )
+
+    # =========================
+    # 4) DESCARGA CSV LIMPIO
+    # =========================
+    st.subheader("⬇️ Descargar dataset limpio")
+    clean_name = file.name.replace(".csv", "").replace(".xlsx", "")
+    csv_bytes = df_clean.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label=f"📥 Descargar {clean_name}_clean.csv",
+        data=csv_bytes,
+        file_name=f"{clean_name}_clean.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
     st.divider()

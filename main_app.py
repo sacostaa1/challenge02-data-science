@@ -356,12 +356,12 @@ else:
         sku_col_trans = None
         sku_col_inv = None
 
-        for c in ["SKU", "sku", "Sku"]:
+        for c in ["SKU", "sku", "Sku", "SKU_ID"]:
             if c in df_master.columns:
                 sku_col_trans = c
                 break
 
-        for c in ["SKU", "sku", "Sku"]:
+        for c in ["SKU", "sku", "Sku", "SKU_ID"]:
             if c in inventario_clean.columns:
                 sku_col_inv = c
                 break
@@ -391,13 +391,13 @@ else:
 
     # ---------- JOIN con feedback por transaccion_id ----------
     if feedback_clean is not None:
-        if "transaccion_id" in df_master.columns and "transaccion_id" in feedback_clean.columns:
+        if "Transaccion_ID" in df_master.columns and "Transaccion_ID" in feedback_clean.columns:
             # Evitar duplicaciones si feedback tiene múltiples filas por transacción
-            feedback_one = feedback_clean.drop_duplicates(subset=["transaccion_id"]).copy()
+            feedback_one = feedback_clean.drop_duplicates(subset=["Transaccion_ID"]).copy()
 
             df_master = df_master.merge(
                 feedback_one,
-                on="transaccion_id",
+                on="Transaccion_ID",
                 how="left",
                 suffixes=("", "_fb")
             )
@@ -420,3 +420,4 @@ else:
         mime="text/csv",
         use_container_width=True
     )
+

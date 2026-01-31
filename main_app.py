@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
 
@@ -29,14 +30,6 @@ def outlier_iqr_stats(series: pd.Series):
 
 
 def get_healthcheck_report(df: pd.DataFrame):
-    """
-    Reporte de métricas iniciales:
-    - % nulidad por columna
-    - tipos
-    - duplicados
-    - magnitud de outliers (IQR) en numéricas
-    - min/max para ver extremos rápidamente
-    """
     duplicated_rows = int(df.duplicated().sum())
 
     report = pd.DataFrame(index=df.columns)
@@ -45,7 +38,6 @@ def get_healthcheck_report(df: pd.DataFrame):
     report["Nulidad (%)"] = (df.isnull().mean() * 100).round(2)
     report["Únicos (#)"] = df.nunique(dropna=True)
 
-    # min/max numéricas
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     report["Mín"] = np.nan
     report["Máx"] = np.nan
@@ -53,7 +45,6 @@ def get_healthcheck_report(df: pd.DataFrame):
         report.loc[num_cols, "Mín"] = df[num_cols].min(numeric_only=True)
         report.loc[num_cols, "Máx"] = df[num_cols].max(numeric_only=True)
 
-    # outliers
     report["Outliers (#)"] = np.nan
     report["Outliers (%)"] = np.nan
     report["IQR Lower"] = np.nan
@@ -66,7 +57,6 @@ def get_healthcheck_report(df: pd.DataFrame):
         report.loc[col, "IQR Lower"] = lower
         report.loc[col, "IQR Upper"] = upper
 
-    # ordenar por severidad
     report = report.sort_values(
         by=["Nulidad (%)", "Outliers (%)", "Únicos (#)"],
         ascending=[False, False, True]
@@ -90,15 +80,10 @@ def get_healthcheck_report(df: pd.DataFrame):
 #   BUSINESS FINDINGS SAFE
 # =========================
 def safe_numeric(series: pd.Series) -> pd.Series:
-    """Convierte a numérico sin romper la app (strings -> NaN)."""
     return pd.to_numeric(series, errors="coerce")
 
 
 def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
-    """
-    Hallazgos de negocio (robustos a tipos object).
-    Solo diagnóstico (no limpia).
-    """
     findings = []
 
     def add(issue, metric, detail=""):
@@ -106,12 +91,11 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
 
     lname = name.lower()
 
-    # --- INVENTARIO ---
     if "inventario" in lname:
         if "Stock_Actual" in df.columns:
             stock = safe_numeric(df["Stock_Actual"])
             neg = int((stock < 0).sum())
-            add("Stock negativo", neg, "Existencias < 0 (inconsistencia contable)")
+            add("Stock negativo", neg, "Existencias < 0 (interpretación: lista de espera)")
 
         if "Costo_Unitario_USD" in df.columns:
             costo = safe_numeric(df["Costo_Unitario_USD"])
@@ -124,186 +108,269 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             add("Fechas inválidas (Ultima_Revision)", invalid, "No parseables a datetime")
 
         if "Lead_Time_Dias" in df.columns:
-            lt = safe_numeric(df["Lead_Time_Dias"])
-            extreme = int((lt > 365).sum())
-            add("Lead Time extremo (>365 días)", extreme, "Valores logísticos sospechosos")
-
-    # --- TRANSACCIONES ---
-    if "transacciones" in lname or "logistica" in lname:
-        if "Fecha_Venta" in df.columns:
-            parsed = pd.to_datetime(df["Fecha_Venta"], errors="coerce")
-            invalid = int(parsed.isna().sum())
-            add("Fechas inválidas (Fecha_Venta)", invalid, "Formato inconsistente")
-
-        if "Tiempo_Entrega_Real" in df.columns:
-            t = safe_numeric(df["Tiempo_Entrega_Real"])
-            extreme = int((t > 365).sum())
-            add("Tiempo entrega extremo (>365 días)", extreme, "Ej: 999 días")
-
-        if inventory_df is not None and "SKU_ID" in df.columns and "SKU_ID" in inventory_df.columns:
-            missing = df[~df["SKU_ID"].isin(inventory_df["SKU_ID"])]
-            add("SKUs sin maestro (inventario)", len(missing), "Ventas con SKU inexistente")
-
-    # --- FEEDBACK ---
-    if "feedback" in lname or "clientes" in lname:
-        if "Edad_Cliente" in df.columns:
-            edad = safe_numeric(df["Edad_Cliente"])
-            impossible = int((edad > 110).sum())
-            add("Edad imposible (>110)", impossible, "Ej: 195 años")
-
-        if "Satisfaccion_NPS" in df.columns:
-            nps = safe_numeric(df["Satisfaccion_NPS"])
-            below = int((nps < -100).sum())
-            above = int((nps > 100).sum())
-            add("NPS fuera de rango [-100,100]", below + above, "Requiere normalización")
-
-        dup = int(df.duplicated().sum())
-        add("Duplicados detectados", dup, "Pueden ser intencionales, revisar criterio")
+            lt = df["Lead_Time_Dias"].astype(str)
+            weird = int(lt.str.contains("-", na=False).sum())
+            add("Lead Time en rango (texto)", weird, "Ej: '25-30 días' requiere estandarización")
 
     return pd.DataFrame(findings)
 
 
 # =========================
-#     CLEANING + ETHICS
+#   INVENTARIO CLEAN RULES
+# =========================
+def normalize_categoria_value(x):
+    """
+    Normaliza valores similares: smartphone/smartphones -> smartphone
+    ??? -> otros
+    """
+    if pd.isna(x):
+        return np.nan
+
+    s = str(x).strip().lower()
+
+    # reemplazo directo para ruido
+    if s in ["???", "??", "?", "nan", "none", "null", "sin dato", "desconocido"]:
+        return "otros"
+
+    # limpieza de caracteres raros
+    s = re.sub(r"\s+", " ", s)
+
+    # normalización simple plural -> singular (casos conocidos)
+    # (puedes extender el diccionario si aparecen más)
+    mapping = {
+        "smartphones": "smartphone",
+        "smartphone": "smartphone",
+        "laptops": "laptop",
+        "laptop": "laptop",
+        "tablets": "tablet",
+        "tablet": "tablet",
+        "accesorios": "accesorios",
+        "accesorio": "accesorios",
+    }
+
+    return mapping.get(s, s)
+
+
+def clean_inventario_central(df: pd.DataFrame):
+    """
+    Limpieza específica según tus directrices para inventario_central.
+    Devuelve df_clean + decisiones_df.
+    """
+    decisiones = []
+    df_clean = df.copy()
+
+    before_rows = len(df_clean)
+
+    # 1) Normalizar columna Categoria
+    categoria_cols = [c for c in df_clean.columns if c.lower() in ["categoria", "categoría"]]
+    if categoria_cols:
+        cat_col = categoria_cols[0]
+        before_unique = df_clean[cat_col].nunique(dropna=True)
+
+        df_clean[cat_col] = df_clean[cat_col].apply(normalize_categoria_value)
+
+        after_unique = df_clean[cat_col].nunique(dropna=True)
+        decisiones.append({
+            "Acción": "Normalización categórica",
+            "Columna": cat_col,
+            "Registros afectados": int(len(df_clean)),
+            "Justificación": (
+                "Se normalizaron valores similares (ej: smartphone/smartphones) "
+                "para evitar fragmentación en análisis por categoría. "
+                f"Únicos antes: {before_unique}, únicos después: {after_unique}."
+            )
+        })
+
+        # reemplazo ??? -> otros (ya está dentro de normalize)
+        replaced_otros = int((df_clean[cat_col] == "otros").sum())
+        decisiones.append({
+            "Acción": "Reasignación de categoría no informativa",
+            "Columna": cat_col,
+            "Registros afectados": replaced_otros,
+            "Justificación": "Valores como '???' no aportan significado, se renombraron a 'otros'."
+        })
+
+    # 2) Stock: nulos -> 0, negativos se quedan
+    stock_cols = [c for c in df_clean.columns if c.lower() in ["stock_actual", "stock", "cantidad_stock"]]
+    if stock_cols:
+        stock_col = stock_cols[0]
+        # convertir a numérico (sin forzar limpieza de negativos)
+        stock_numeric = pd.to_numeric(df_clean[stock_col], errors="coerce")
+
+        nulls_before = int(stock_numeric.isna().sum())
+        df_clean[stock_col] = stock_numeric.fillna(0)
+
+        decisiones.append({
+            "Acción": "Imputación de stock nulo",
+            "Columna": stock_col,
+            "Registros afectados": nulls_before,
+            "Justificación": (
+                "Se imputaron nulos con 0, interpretando ausencia de stock físico. "
+                "Los valores negativos se conservaron (interpretación: unidades en lista de espera/backorder)."
+            )
+        })
+
+    # 3) Costo_unitario: eliminar outliers extremos (fila)
+    costo_cols = [c for c in df_clean.columns if c.lower() in ["costo_unitario_usd", "costo_unitario", "costo"]]
+    if costo_cols:
+        costo_col = costo_cols[0]
+        costo_num = pd.to_numeric(df_clean[costo_col], errors="coerce")
+
+        # criterio: IQR + filtro de extremos muy agresivos
+        # (esto captura casos como 5 USD y 850000 USD si se salen de distribución)
+        s = costo_num.dropna()
+        removed = 0
+
+        if not s.empty:
+            Q1 = s.quantile(0.25)
+            Q3 = s.quantile(0.75)
+            IQR = Q3 - Q1
+
+            if IQR > 0 and not pd.isna(IQR):
+                lower = Q1 - 1.5 * IQR
+                upper = Q3 + 1.5 * IQR
+
+                # extra guardrail: costos <= 0 también son sospechosos
+                mask_out = (costo_num < lower) | (costo_num > upper) | (costo_num <= 0)
+                removed = int(mask_out.sum())
+
+                df_clean = df_clean.loc[~mask_out].copy()
+
+                decisiones.append({
+                    "Acción": "Eliminación de filas por costo outlier",
+                    "Columna": costo_col,
+                    "Registros afectados": removed,
+                    "Justificación": (
+                        "Se eliminaron registros con costos extremos (outliers) "
+                        "que distorsionan métricas financieras. "
+                        f"Umbrales IQR: [{lower:.2f}, {upper:.2f}] y además costo <= 0."
+                    )
+                })
+            else:
+                decisiones.append({
+                    "Acción": "Revisión de outliers (sin acción)",
+                    "Columna": costo_col,
+                    "Registros afectados": 0,
+                    "Justificación": "No se aplicó IQR porque la dispersión (IQR) fue 0 o inválida."
+                })
+
+        df_clean[costo_col] = pd.to_numeric(df_clean[costo_col], errors="coerce")
+
+    # 4) Lead_Time: "25-30 días" -> "25-30", NaN -> "indefinido"
+    lead_cols = [c for c in df_clean.columns if c.lower() in ["lead_time_dias", "lead_time", "leadtime"]]
+    if lead_cols:
+        lead_col = lead_cols[0]
+
+        # contar nulos antes
+        lead_before = df_clean[lead_col].copy()
+        nulls_before = int(lead_before.isna().sum())
+
+        def normalize_lead_time(v):
+            if pd.isna(v):
+                return "indefinido"
+
+            s = str(v).strip().lower()
+
+            if s in ["nan", "none", "null", ""]:
+                return "indefinido"
+
+            # ejemplo: "25-30 días" -> "25-30"
+            s = s.replace("días", "").replace("dias", "").strip()
+
+            # si viene algo como "25 - 30" -> "25-30"
+            s = re.sub(r"\s*-\s*", "-", s)
+
+            # mantener solo números y guion
+            s = re.sub(r"[^0-9\-]", "", s)
+
+            return s if s != "" else "indefinido"
+
+        df_clean[lead_col] = df_clean[lead_col].apply(normalize_lead_time)
+
+        decisiones.append({
+            "Acción": "Estandarización Lead Time",
+            "Columna": lead_col,
+            "Registros afectados": int(len(df_clean)),
+            "Justificación": (
+                "Se estandarizó Lead_Time eliminando texto ('días') y dejando solo números/rangos. "
+                f"Los NaN se reemplazaron por 'indefinido' (nulos detectados: {nulls_before})."
+            )
+        })
+
+    after_rows = len(df_clean)
+    removed_rows_total = before_rows - after_rows
+
+    if removed_rows_total > 0:
+        decisiones.append({
+            "Acción": "Resumen de eliminación de filas",
+            "Columna": "(dataset)",
+            "Registros afectados": removed_rows_total,
+            "Justificación": "Se eliminaron filas únicamente por reglas explícitas (outliers de costo_unitario)."
+        })
+
+    return df_clean, pd.DataFrame(decisiones)
+
+
+# =========================
+#   GENERIC CLEAN (OTHERS)
 # =========================
 def justify_imputation(col_data: pd.Series):
-    """
-    Decide Media/Mediana/Moda y justifica.
-    - Numérica: skewness decide media vs mediana
-    - Categórica: moda
-    """
     if pd.api.types.is_numeric_dtype(col_data):
         skewness = col_data.dropna().skew()
         if pd.isna(skewness):
-            return "Mediana", "No se pudo estimar skewness (pocos datos). Se usa Mediana por robustez."
+            return "Mediana", "No se pudo calcular skew (pocos datos). Se usa mediana por robustez."
         if abs(skewness) < 0.5:
             return "Media", f"Distribución aproximadamente simétrica (skew: {skewness:.2f})"
-        return "Mediana", f"Distribución sesgada (skew: {skewness:.2f})"
+        else:
+            return "Mediana", f"Distribución sesgada (skew: {skewness:.2f}), mediana es más robusta"
+    return "Moda", "Variable categórica: se usa el valor más frecuente (moda)"
 
-    return "Moda", "Variable categórica (se imputa con el valor más frecuente)"
 
+def clean_dataset_generic(df: pd.DataFrame):
+    decisiones = []
 
-def clean_dataset(df: pd.DataFrame):
-    """
-    Limpieza base:
-    1) elimina duplicados exactos
-    2) imputación de nulos (media/mediana/moda)
-    Retorna:
-    - df_clean
-    - decision_log (ética)
-    - resumen_limpieza
-    """
-    decision_log = []
-    resumen = {}
-
-    before_rows = len(df)
     dup_count = int(df.duplicated().sum())
-
-    # 1) Eliminar duplicados exactos
     df_clean = df.drop_duplicates().copy()
-    after_dup_rows = len(df_clean)
 
-    resumen["filas_iniciales"] = before_rows
-    resumen["duplicados_detectados"] = dup_count
-    resumen["duplicados_eliminados"] = before_rows - after_dup_rows
+    decisiones.append({
+        "Acción": "Eliminar duplicados exactos",
+        "Columna": "(todas)",
+        "Registros afectados": dup_count,
+        "Justificación": "Se eliminaron filas duplicadas completas para evitar doble conteo."
+    })
 
-    if dup_count > 0:
-        decision_log.append({
-            "Acción": "Eliminar registros",
-            "Columna": "(todas)",
-            "Qué se hizo": f"Se eliminaron duplicados exactos (drop_duplicates)",
-            "Cantidad": resumen["duplicados_eliminados"],
-            "Justificación": "Registros repetidos inflan métricas y sesgan análisis; se conserva 1 copia."
-        })
-
-    # 2) Imputación de nulos
-    imputations = 0
     for col in df_clean.columns:
-        nulls = int(df_clean[col].isna().sum())
+        nulls = int(df_clean[col].isnull().sum())
         if nulls == 0:
             continue
 
         metodo, razon = justify_imputation(df_clean[col])
 
         if metodo == "Media":
-            fill_val = df_clean[col].mean()
+            fill_val = pd.to_numeric(df_clean[col], errors="coerce").mean()
         elif metodo == "Mediana":
-            fill_val = df_clean[col].median()
+            fill_val = pd.to_numeric(df_clean[col], errors="coerce").median()
         else:
-            # Moda: si está todo nulo, mode() falla
-            mode_vals = df_clean[col].mode(dropna=True)
-            fill_val = mode_vals.iloc[0] if len(mode_vals) > 0 else "DESCONOCIDO"
+            mode_series = df_clean[col].mode(dropna=True)
+            fill_val = mode_series.iloc[0] if not mode_series.empty else None
 
-        df_clean[col] = df_clean[col].fillna(fill_val)
-        imputations += nulls
+        if fill_val is not None and not (isinstance(fill_val, float) and np.isnan(fill_val)):
+            df_clean[col] = df_clean[col].fillna(fill_val)
 
-        decision_log.append({
+        decisiones.append({
             "Acción": "Imputar nulos",
             "Columna": col,
-            "Qué se hizo": f"Se imputaron {nulls} valores nulos con {metodo}",
-            "Cantidad": nulls,
-            "Justificación": razon
+            "Registros afectados": nulls,
+            "Justificación": f"{metodo}. {razon}"
         })
 
-    resumen["valores_imputados_total"] = imputations
-    resumen["columnas_imputadas"] = int((df.isna().sum() > 0).sum())
-
-    return df_clean, pd.DataFrame(decision_log), resumen
+    return df_clean, pd.DataFrame(decisiones)
 
 
 # =========================
-#       FILTROS SMART
+#       UI SIDEBAR
 # =========================
-def detect_date_candidates(df):
-    keywords = ['fecha', 'date', 'dia', 'day', 'timestamp', 'time']
-    candidates = []
-    for c in df.columns:
-        name = c.lower()
-        if any(k in name for k in keywords):
-            candidates.append(c)
-            continue
-        sample = df[c].dropna().head(20)
-        if len(sample) > 0:
-            parsed = pd.to_datetime(sample, errors='coerce')
-            if parsed.notna().sum() / len(sample) > 0.6:
-                candidates.append(c)
-    return candidates
-
-
-def detect_category_candidates(df):
-    keywords = ['categor', 'cat', 'tipo', 'segmento', 'category']
-    candidates = []
-    for c in df.columns:
-        name = c.lower()
-        dtype = str(df[c].dtype)
-        nunique = df[c].nunique(dropna=True)
-        if any(k in name for k in keywords):
-            candidates.append(c)
-            continue
-        if dtype.startswith('object') or dtype.startswith('category'):
-            if nunique > 0 and nunique < max(100, len(df) * 0.5):
-                candidates.append(c)
-    return candidates
-
-
-def detect_bodega_candidates(df):
-    keywords = ['bodega', 'tienda', 'store', 'warehouse', 'sucursal', 'branch']
-    candidates = []
-    for c in df.columns:
-        name = c.lower()
-        nunique = df[c].nunique(dropna=True)
-        if any(k in name for k in keywords):
-            candidates.append(c)
-            continue
-        if (str(df[c].dtype).startswith('object') or str(df[c].dtype).startswith('category')) and nunique > 0 and nunique < min(500, max(10, len(df) * 0.2)):
-            candidates.append(c)
-    return candidates
-
-
-# =========================
-#         UI SIDEBAR
-# =========================
-st.title("🛡️ Data Healthcheck Pro (Métricas + Limpieza + Ética)")
+st.title("🛡️ Data Healthcheck Pro (Diagnóstico + Limpieza Dirigida)")
 
 with st.sidebar:
     st.title("📂 Panel de Control")
@@ -313,99 +380,17 @@ with st.sidebar:
         accept_multiple_files=True
     )
 
-    filtros_activos = {}
-
-    if uploaded_files:
-        st.divider()
-        st.caption("Configura filtros por dataset (máx 3 archivos).")
-
-        for i, file in enumerate(uploaded_files[:3]):
-            st.subheader(f"🛠️ Filtros: {file.name}")
-
-            try:
-                df_temp = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-            except Exception as e:
-                st.warning(f"No se pudo leer {file.name} en sidebar: {e}")
-                continue
-
-            # Reset pointer
-            try:
-                file.seek(0)
-            except Exception:
-                pass
-
-            date_candidates = detect_date_candidates(df_temp)
-            cat_candidates = detect_category_candidates(df_temp)
-            bod_candidates = detect_bodega_candidates(df_temp)
-
-            # Fecha
-            sel_date = st.selectbox(
-                f"Columna de fecha para {file.name}",
-                ['(ninguna)'] + date_candidates,
-                key=f"sel_date_{i}"
-            )
-            dates = (None, None)
-            if sel_date and sel_date != '(ninguna)':
-                try:
-                    df_temp[sel_date] = pd.to_datetime(df_temp[sel_date], errors='coerce')
-                    min_d, max_d = df_temp[sel_date].min(), df_temp[sel_date].max()
-
-                    if pd.isna(min_d) or pd.isna(max_d):
-                        st.warning(f"La columna {sel_date} no contiene fechas reconocibles.")
-                    else:
-                        dates = st.date_input(
-                            f"Rango de {sel_date}",
-                            [min_d, max_d],
-                            key=f"date_{i}"
-                        )
-                except Exception:
-                    st.warning(f"No se pudo convertir {sel_date} a datetime.")
-
-            # Categoría
-            sel_cat = st.selectbox(
-                f"Columna de categoría para {file.name}",
-                ['(ninguna)'] + cat_candidates,
-                key=f"sel_cat_{i}"
-            )
-            cat_sel = []
-            if sel_cat and sel_cat != '(ninguna)':
-                values = df_temp[sel_cat].dropna().unique().tolist()
-                cat_sel = st.multiselect(f"Valores en {sel_cat}", values, key=f"cat_{i}")
-
-            # Bodega/Tienda
-            sel_bod = st.selectbox(
-                f"Columna de bodega/tienda para {file.name}",
-                ['(ninguna)'] + bod_candidates,
-                key=f"sel_bod_{i}"
-            )
-            bod_sel = []
-            if sel_bod and sel_bod != '(ninguna)':
-                values = df_temp[sel_bod].dropna().unique().tolist()
-                bod_sel = st.multiselect(f"Valores en {sel_bod}", values, key=f"bod_{i}")
-
-            filtros_activos[file.name] = {
-                'date_col': None if sel_date == '(ninguna)' else sel_date,
-                'dates': dates,
-                'cat_col': None if sel_cat == '(ninguna)' else sel_cat,
-                'cat_sel': cat_sel,
-                'bod_col': None if sel_bod == '(ninguna)' else sel_bod,
-                'bod_sel': bod_sel
-            }
-
-            st.divider()
-
-        if st.button("🔄 Refrescar Análisis", use_container_width=True):
-            st.rerun()
+    if st.button("🔄 Refrescar App", use_container_width=True):
+        st.rerun()
 
 
 # =========================
 #        MAIN BODY
 # =========================
 if not uploaded_files:
-    st.info("👈 Sube los archivos para generar métricas de Healthcheck y limpiar.")
+    st.info("👈 Sube los archivos para generar métricas, limpieza y descarga.")
     st.stop()
 
-# Referencia inventario para integridad referencial
 inventory_ref = None
 for f in uploaded_files:
     if "inventario" in f.name.lower():
@@ -416,7 +401,7 @@ for f in uploaded_files:
             inventory_ref = None
         break
 
-st.subheader("🧾 Healthcheck + Limpieza + Decisión Ética")
+st.subheader("🧾 Diagnóstico y Limpieza (por dataset)")
 
 for file in uploaded_files[:3]:
     st.header(f"Dataset: {file.name}")
@@ -428,89 +413,81 @@ for file in uploaded_files[:3]:
 
     try:
         df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-    except pd.errors.EmptyDataError:
-        st.warning(f"El archivo {file.name} está vacío y será omitido.")
-        continue
     except Exception as e:
         st.warning(f"Error leyendo {file.name}: {e}")
         continue
 
-    # Aplicar filtros
-    f = filtros_activos.get(file.name, {})
-    df_filtered = df.copy()
-
-    if f.get('date_col') and f.get('dates') and len(f['dates']) == 2 and f['dates'][0] and f['dates'][1]:
-        df_filtered[f['date_col']] = pd.to_datetime(df_filtered[f['date_col']], errors='coerce')
-        df_filtered = df_filtered[
-            (df_filtered[f['date_col']].dt.date >= f['dates'][0]) &
-            (df_filtered[f['date_col']].dt.date <= f['dates'][1])
-        ]
-
-    if f.get('cat_sel'):
-        df_filtered = df_filtered[df_filtered[f['cat_col']].isin(f['cat_sel'])]
-
-    if f.get('bod_sel'):
-        df_filtered = df_filtered[df_filtered[f['bod_col']].isin(f['bod_sel'])]
-
-    # =========================
-    # 1) HEALTHCHECK (ANTES)
-    # =========================
+    # ==============
+    # HEALTHCHECK BEFORE
+    # ==============
     st.subheader("🔍 Healthcheck (Antes)")
-    report, resumen = get_healthcheck_report(df_filtered)
+    report_before, resumen_before = get_healthcheck_report(df)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Filas", resumen["filas"])
-    m2.metric("Columnas", resumen["columnas"])
-    m3.metric("Duplicados", resumen["duplicados"])
-    m4.metric("% Nulos total", f'{resumen["pct_nulos_total"]}%')
+    m1.metric("Filas", resumen_before["filas"])
+    m2.metric("Columnas", resumen_before["columnas"])
+    m3.metric("Duplicados", resumen_before["duplicados"])
+    m4.metric("% Nulos total", f'{resumen_before["pct_nulos_total"]}%')
 
-    st.dataframe(report, use_container_width=True)
+    st.dataframe(report_before, use_container_width=True)
 
-    # Hallazgos de negocio
-    st.subheader("🧠 Hallazgos de negocio")
-    findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
+    # ==============
+    # CLEANING (specific inventory rules)
+    # ==============
+    st.subheader("🧹 Limpieza aplicada")
 
+    if "inventario_central" in file.name.lower() or "inventario" in file.name.lower():
+        df_clean, decisiones_df = clean_inventario_central(df)
+        st.success("Se aplicó limpieza específica para inventario_central.")
+    else:
+        df_clean, decisiones_df = clean_dataset_generic(df)
+        st.info("Se aplicó limpieza genérica (duplicados + imputación).")
+
+    # ==============
+    # HEALTHCHECK AFTER
+    # ==============
+    st.subheader("✅ Healthcheck (Después)")
+    report_after, resumen_after = get_healthcheck_report(df_clean)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Filas finales", resumen_after["filas"])
+    m2.metric("Cols con nulos", resumen_after["cols_con_nulos"])
+    m3.metric("Duplicados (después)", resumen_after["duplicados"])
+    m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
+
+    st.dataframe(report_after, use_container_width=True)
+
+    # ==============
+    # BUSINESS FINDINGS
+    # ==============
+    st.subheader("🧠 Hallazgos de negocio (Data Quality Rules)")
+    findings = dataset_business_checks(file.name, df, inventory_df=inventory_ref)
     if findings.empty:
-        st.success("No se detectaron hallazgos de negocio con las reglas actuales.")
+        st.success("No se detectaron hallazgos con las reglas actuales.")
     else:
         st.dataframe(findings, use_container_width=True)
 
-    # =========================
-    # 2) LIMPIEZA
-    # =========================
-    st.subheader("🧼 Limpieza automática (Base)")
-    df_clean, ethics_log, resumen_limpieza = clean_dataset(df_filtered)
+    # ==============
+    # ETHICAL DECISION MODULE
+    # ==============
+    st.subheader("⚖️ Decisión Ética (Qué eliminé y qué imputé)")
+    st.caption("Incluye normalizaciones, imputaciones y eliminaciones de filas con justificación.")
 
-    a, b, c = st.columns(3)
-    a.metric("Filas iniciales", resumen_limpieza["filas_iniciales"])
-    b.metric("Duplicados eliminados", resumen_limpieza["duplicados_eliminados"])
-    c.metric("Valores imputados", resumen_limpieza["valores_imputados_total"])
-
-    # =========================
-    # 3) DECISIÓN ÉTICA
-    # =========================
-    st.info("### ⚖️ Decisión Ética: ¿Qué se eliminó y qué se imputó?")
-    if ethics_log.empty:
-        st.write("No se realizaron eliminaciones ni imputaciones en este dataset.")
+    if decisiones_df.empty:
+        st.info("No se registraron decisiones (dataset sin cambios).")
     else:
-        st.dataframe(ethics_log, use_container_width=True)
+        st.dataframe(decisiones_df, use_container_width=True)
 
-    st.caption(
-        "📌 Criterio de imputación: "
-        "Media si la distribución es aproximadamente simétrica (|skew| < 0.5), "
-        "Mediana si es sesgada, Moda si es categórica."
-    )
-
-    # =========================
-    # 4) DESCARGA CSV LIMPIO
-    # =========================
+    # ==============
+    # DOWNLOAD CLEAN CSV
+    # ==============
     st.subheader("⬇️ Descargar dataset limpio")
-    clean_name = file.name.replace(".csv", "").replace(".xlsx", "")
-    csv_bytes = df_clean.to_csv(index=False).encode("utf-8")
 
+    clean_csv = df_clean.to_csv(index=False).encode("utf-8")
+    clean_name = file.name.replace(".csv", "").replace(".xlsx", "")
     st.download_button(
         label=f"📥 Descargar {clean_name}_clean.csv",
-        data=csv_bytes,
+        data=clean_csv,
         file_name=f"{clean_name}_clean.csv",
         mime="text/csv",
         use_container_width=True

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from clean_inventario import clean_inventario_central
-from filters import apply_filters_ui
+from filters import apply_filters_ui, render_filters_panel
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
 
@@ -258,33 +258,10 @@ for file in uploaded_files[:3]:
     m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
 
     st.dataframe(report_after, use_container_width=True)
-
-        # ==============
-        # FILTRADO SOBRE DATA LIMPIA
-        # ==============
-        with st.expander("🔎 Aplicar filtros al dataset limpio (fecha/categoría/bodega)", expanded=False):
-            df_filtered = apply_filters_ui(df_clean, file.name, key_prefix=file.name)
-
-            st.markdown("**Healthcheck tras filtros aplicados**")
-            report_filt, resumen_filt = get_healthcheck_report(df_filtered)
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Filas (filtradas)", resumen_filt["filas"])
-            m2.metric("Columnas", resumen_filt["columnas"])
-            m3.metric("Duplicados", resumen_filt["duplicados"])
-            m4.metric("% Nulos total", f'{resumen_filt["pct_nulos_total"]}%')
-
-            st.dataframe(report_filt, use_container_width=True)
-
-            # descarga del subset filtrado
-            sub_csv = df_filtered.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label=f"📥 Descargar subset filtrado: {file.name}",
-                data=sub_csv,
-                file_name=f"{file.name.replace('.csv','').replace('.xlsx','')}_filtered.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    # ==============
+    # FILTRADO SOBRE DATA LIMPIA (delegado a filters.render_filters_panel)
+    # ==============
+    df_filtered = render_filters_panel(df_clean, file.name, key_prefix=file.name, report_func=get_healthcheck_report)
 
     # ==============
     # BUSINESS FINDINGS

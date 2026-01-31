@@ -97,3 +97,48 @@ def apply_filters_ui(df: pd.DataFrame, file_name: str, key_prefix: str = '') -> 
         df_filtered = df_filtered[df_filtered[sel_bod].isin(bod_vals)]
 
     return df_filtered
+
+
+def render_filters_panel(df: pd.DataFrame, file_name: str, key_prefix: str, report_func):
+    """Renderiza la UI de filtros y muestra el healthcheck usando `report_func` callback.
+
+    `report_func` debe ser una función que reciba un DataFrame y devuelva (report_df, resumen_dict).
+    Devuelve el DataFrame filtrado.
+    """
+    with st.expander("🔎 Aplicar filtros al dataset limpio (fecha/categoría/bodega)", expanded=False):
+        df_filtered = apply_filters_ui(df, file_name, key_prefix=key_prefix)
+
+        try:
+            report_filt, resumen_filt = report_func(df_filtered)
+        except Exception:
+            # si falla el callback, construimos un resumen mínimo
+            report_filt = pd.DataFrame()
+            resumen_filt = {
+                "filas": int(df_filtered.shape[0]) if df_filtered is not None else 0,
+                "columnas": int(df_filtered.shape[1]) if df_filtered is not None else 0,
+                "duplicados": int(df_filtered.duplicated().sum()) if df_filtered is not None else 0,
+                "pct_nulos_total": round((df_filtered.isnull().sum().sum() / (df_filtered.size)) * 100, 2) if df_filtered is not None and df_filtered.size else 0.0
+            }
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Filas (filtradas)", resumen_filt.get("filas", 0))
+        m2.metric("Columnas", resumen_filt.get("columnas", 0))
+        m3.metric("Duplicados", resumen_filt.get("duplicados", 0))
+        m4.metric("% Nulos total", f"{resumen_filt.get('pct_nulos_total', 0.0)}%")
+
+        if not report_filt.empty:
+            st.dataframe(report_filt, use_container_width=True)
+        else:
+            st.write("No hay reporte detallado disponible para el subset filtrado.")
+
+        # descarga del subset filtrado
+        sub_csv = df_filtered.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label=f"📥 Descargar subset filtrado: {file_name}",
+            data=sub_csv,
+            file_name=f"{file_name.replace('.csv','').replace('.xlsx','')}_filtered.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+        return df_filtered

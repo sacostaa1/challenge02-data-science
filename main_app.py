@@ -120,8 +120,9 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
 # =========================
 def normalize_categoria_value(x):
     """
-    Normaliza valores similares: smartphone/smartphones -> smartphone
-    ??? -> otros
+    Normaliza valores similares:
+    - smartphone / smartphones / smart-phone / smart phone -> smartphone
+    - ??? -> otros
     """
     if pd.isna(x):
         return np.nan
@@ -132,23 +133,26 @@ def normalize_categoria_value(x):
     if s in ["???", "??", "?", "nan", "none", "null", "sin dato", "desconocido"]:
         return "otros"
 
-    # limpieza de caracteres raros
-    s = re.sub(r"\s+", " ", s)
+    # limpiar caracteres (mantener letras/números/espacios)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)   # quita guiones, puntos, etc.
+    s = re.sub(r"\s+", " ", s).strip()
 
-    # normalización simple plural -> singular (casos conocidos)
-    # (puedes extender el diccionario si aparecen más)
+    # normalización fuerte: smartphone (todas sus variantes)
+    if s.replace(" ", "") in ["smartphone", "smartphones"]:
+        return "smartphone"
+
+    # diccionario de categorías conocidas
     mapping = {
-        "smartphones": "smartphone",
-        "smartphone": "smartphone",
-        "laptops": "laptop",
         "laptop": "laptop",
-        "tablets": "tablet",
+        "laptops": "laptop",
         "tablet": "tablet",
-        "accesorios": "accesorios",
+        "tablets": "tablet",
         "accesorio": "accesorios",
+        "accesorios": "accesorios",
     }
 
     return mapping.get(s, s)
+
 
 
 def clean_inventario_central(df: pd.DataFrame):
@@ -494,3 +498,4 @@ for file in uploaded_files[:3]:
     )
 
     st.divider()
+

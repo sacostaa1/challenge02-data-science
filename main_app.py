@@ -367,23 +367,32 @@ else:
                 break
 
         if sku_col_trans is not None and sku_col_inv is not None:
+            # Merge con indicador para detectar matches reales
             df_master = df_master.merge(
                 inventario_clean,
                 left_on=sku_col_trans,
                 right_on=sku_col_inv,
                 how="left",
-                suffixes=("", "_inv")
+                suffixes=("", "_inv"),
+                indicator=True
             )
 
-            # Flag SKU fantasma (no encontrado en inventario)
-            # Usamos la columna del inventario (sku_col_inv) para detectar match
-            df_master["sku_en_inventario"] = df_master[sku_col_inv].notna()
+            # Flag SKU encontrado o fantasma
+            df_master["sku_en_inventario"] = df_master["_merge"].eq("both")
 
-            # Si existe "categoria" en el master y quedó nula por no match -> no_catalogado
+            # (Opcional) contar fantasmas para monitoreo
+            sku_fantasmas = int((df_master["_merge"] == "left_only").sum())
+
+            # Eliminar columna auxiliar del merge
+            df_master.drop(columns=["_merge"], inplace=True)
+
+            # Si existe "categoria" y quedó nula por no match -> no_catalogado
             if "categoria" in df_master.columns:
                 df_master["categoria"] = df_master["categoria"].fillna("no_catalogado")
 
             st.success("✅ Join aplicado: transacciones + inventario (LEFT JOIN por SKU).")
+            st.info(f"📌 SKUs fantasma detectados (ventas sin SKU en inventario): {sku_fantasmas}")
+
         else:
             st.warning("⚠️ No se pudo hacer join con inventario: no se encontró columna SKU/sku en ambos datasets.")
     else:
@@ -420,4 +429,3 @@ else:
         mime="text/csv",
         use_container_width=True
     )
-

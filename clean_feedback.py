@@ -20,7 +20,6 @@ def normalize_ticket_value(x):
     if s in ["0", "no", "n", "false", "f"]:
         return "NO"
 
-    # Si viene algo raro, lo dejamos como NaN para que se note en métricas
     return np.nan
 
 
@@ -35,7 +34,7 @@ def clean_feedback_clientes(df: pd.DataFrame):
     before_rows = len(df_clean)
 
     # =========================================================
-    # 1) rating_producto: >5 -> 5 (incluye el 99)
+    # 1) rating_producto: >5 -> 5 (incluye 99)
     # =========================================================
     rating_cols = [c for c in df_clean.columns if c.lower() in ["rating_producto", "rating", "calificacion_producto"]]
     if rating_cols:
@@ -59,14 +58,14 @@ def clean_feedback_clientes(df: pd.DataFrame):
 
     # =========================================================
     # 2) comentario_texto: N/A y --- -> N/A
+    #    ⚠️ IMPORTANTE: NO tocamos recomienda_marca
     # =========================================================
     comment_cols = [c for c in df_clean.columns if c.lower() in ["comentario_texto", "comentario", "feedback_texto"]]
     if comment_cols:
         comment_col = comment_cols[0]
 
-        before_na = int(df_clean[comment_col].isna().sum())
+        nulls_before = int(df_clean[comment_col].isna().sum())
 
-        # normalización: valores tipo N/A, --- y similares
         def normalize_comment(x):
             if pd.isna(x):
                 return "N/A"
@@ -89,12 +88,11 @@ def clean_feedback_clientes(df: pd.DataFrame):
             )
         })
 
-        # (opcional) info adicional de nulos antes
-        if before_na > 0:
+        if nulls_before > 0:
             decisiones.append({
                 "Acción": "Imputación de comentario nulo",
                 "Columna": comment_col,
-                "Registros afectados": before_na,
+                "Registros afectados": nulls_before,
                 "Justificación": "Los comentarios nulos se interpretan como ausencia de comentario y se imputan como 'N/A'."
             })
 
@@ -134,15 +132,18 @@ def clean_feedback_clientes(df: pd.DataFrame):
 
     # =========================================================
     # 4) edad: eliminar registro atípico 195
+    #    ✅ FIX: comparación robusta con coerción numérica
     # =========================================================
     edad_cols = [c for c in df_clean.columns if c.lower() in ["edad", "age"]]
     if edad_cols:
         edad_col = edad_cols[0]
+
         edad_num = pd.to_numeric(df_clean[edad_col], errors="coerce")
 
-        mask_195 = (edad_num == 195)
-        removed = int(mask_195.sum())
+        # FIX robusto: detecta 195, 195.0, "195 ", etc.
+        mask_195 = edad_num.eq(195)
 
+        removed = int(mask_195.sum())
         df_clean = df_clean.loc[~mask_195].copy()
 
         decisiones.append({
@@ -155,6 +156,7 @@ def clean_feedback_clientes(df: pd.DataFrame):
             )
         })
 
+        # volver a convertir la columna en el df final
         df_clean[edad_col] = pd.to_numeric(df_clean[edad_col], errors="coerce")
 
     # =========================================================

@@ -103,12 +103,9 @@ def clean_feedback_clientes(df: pd.DataFrame):
     if ticket_cols:
         ticket_col = ticket_cols[0]
 
-        nulls_before = int(df_clean[ticket_col].isna().sum())
-
         df_clean[ticket_col] = df_clean[ticket_col].apply(normalize_ticket_value)
 
-        nulls_after = int(df_clean[ticket_col].isna().sum())
-        affected = int(len(df_clean) - nulls_after)
+        affected = int(df_clean[ticket_col].notna().sum())
 
         decisiones.append({
             "Acción": "Normalización booleana ticket_soporte_abierto",
@@ -120,44 +117,74 @@ def clean_feedback_clientes(df: pd.DataFrame):
             )
         })
 
-        if nulls_after > 0 and nulls_after != nulls_before:
-            decisiones.append({
-                "Acción": "Valores no reconocidos en ticket_soporte_abierto",
-                "Columna": ticket_col,
-                "Registros afectados": nulls_after,
-                "Justificación": (
-                    "Algunos registros no pudieron mapearse a SI/NO y quedaron como nulos para revisión."
-                )
-            })
-
     # =========================================================
-    # 4) edad: eliminar registro atípico 195
-    #    ✅ FIX: comparación robusta con coerción numérica
+    # 4) edad: eliminar outliers por IQR (en vez de solo 195)
     # =========================================================
     edad_cols = [c for c in df_clean.columns if c.lower() in ["edad", "age"]]
     if edad_cols:
         edad_col = edad_cols[0]
-
         edad_num = pd.to_numeric(df_clean[edad_col], errors="coerce")
 
-        # FIX robusto: detecta 195, 195.0, "195 ", etc.
-        mask_195 = edad_num.eq(195)
+        s = edad_num.dropna()
 
-        removed = int(mask_195.sum())
-        df_clean = df_clean.loc[~mask_195].copy()
+        removed = 0
+        if not s.empty:
+            Q1 = s.quantile(0.25)
+            Q3 = s.quantile(0.75)
+            IQR = Q3 - Q1
+
+            if IQR > 0 and not pd.isna(IQR):
+                lower = Q1 - 1.5 * IQR
+                upper = Q3 + 1.5 * IQR
+
+                mask_out = (edad_num < lower) | (edad_num > upper)
+                removed = int(mask_out.sum())
+
+                df_clean = df_clean.loc[~mask_out].copy()
+
+                decisiones.append({
+                    "Acción": "Eliminación de outliers de edad (IQR)",
+                    "Columna": edad_col,
+                    "Registros afectados": removed,
+                    "Justificación": (
+                        "Se eliminaron registros con edad atípica usando regla IQR "
+                        "para evitar valores imposibles o errores de captura. "
+                        f"Umbrales: [{lower:.2f}, {upper:.2f}]."
+                    )
+                })
+            else:
+                decisiones.append({
+                    "Acción": "Revisión de outliers edad (sin acción)",
+                    "Columna": edad_col,
+                    "Registros afectados": 0,
+                    "Justificación": "No se aplicó IQR porque la dispersión (IQR) fue 0 o inválida."
+                })
+
+        # mantener edad como numérica en el df final
+        if edad_col in df_clean.columns:
+            df_clean[edad_col] = pd.to_numeric(df_clean[edad_col], errors="coerce")
+
+    # =========================================================
+    # 5) satisfaccion_NPS: asegurar valores positivos con abs()
+    # =========================================================
+    nps_cols = [c for c in df_clean.columns if c.lower() in ["satisfaccion_nps", "nps", "satisfaccion"]]
+    if nps_cols:
+        nps_col = nps_cols[0]
+        nps_num = pd.to_numeric(df_clean[nps_col], errors="coerce")
+
+        affected = int((nps_num < 0).sum())
+
+        df_clean[nps_col] = nps_num.abs()
 
         decisiones.append({
-            "Acción": "Eliminación de registro atípico de edad",
-            "Columna": edad_col,
-            "Registros afectados": removed,
+            "Acción": "Normalización de NPS a valores positivos",
+            "Columna": nps_col,
+            "Registros afectados": affected,
             "Justificación": (
-                "Se eliminó el registro con edad=195 por ser un valor imposible/no confiable "
-                "y potencialmente error de digitación."
+                "Se corrigieron valores negativos en satisfaccion_NPS aplicando valor absoluto. "
+                "Esto asegura interpretabilidad consistente en la métrica."
             )
         })
-
-        # volver a convertir la columna en el df final
-        df_clean[edad_col] = pd.to_numeric(df_clean[edad_col], errors="coerce")
 
     # =========================================================
     # Resumen eliminación
@@ -170,7 +197,7 @@ def clean_feedback_clientes(df: pd.DataFrame):
             "Acción": "Resumen de eliminación de filas",
             "Columna": "(dataset)",
             "Registros afectados": removed_rows_total,
-            "Justificación": "Se eliminaron filas únicamente por reglas explícitas (edad=195)."
+            "Justificación": "Se eliminaron filas únicamente por reglas explícitas (outliers de edad)."
         })
 
     return df_clean, pd.DataFrame(decisiones)

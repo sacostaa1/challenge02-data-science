@@ -120,7 +120,7 @@ def clean_feedback_clientes(df: pd.DataFrame):
     # =========================================================
     # 4) edad: eliminar outliers por IQR (en vez de solo 195)
     # =========================================================
-    edad_cols = [c for c in df_clean.columns if c.lower() in ["edad", "age"]]
+    edad_cols = [c for c in df_clean.columns if c.lower() in ["Edad_Cliente", "edad_cliente", "edad", "age"]]
     if edad_cols:
         edad_col = edad_cols[0]
         edad_num = pd.to_numeric(df_clean[edad_col], errors="coerce")

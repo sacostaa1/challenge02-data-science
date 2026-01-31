@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 
 from clean_inventario import clean_inventario_central
-from clean_transacciones import clean_transacciones_logistica  # ✅ NUEVO IMPORT
+from clean_transacciones import clean_transacciones_logistica
+from clean_feedback import clean_feedback_clientes
+
 
 from filters import apply_filters_ui, render_filters_panel
 
@@ -251,6 +253,10 @@ for file in uploaded_files[:3]:
         df_clean, decisiones_df = clean_transacciones_logistica(df)
         st.success("✅ Se aplicó limpieza específica para transacciones_logistica.")
 
+    elif "feedback" in fname or "clientes" in fname:
+        df_clean, decisiones_df = clean_feedback_clientes(df)
+        st.success("✅ Se aplicó limpieza específica para feedback_clientes.")
+
     else:
         df_clean, decisiones_df = clean_dataset_generic(df)
         st.info("ℹ️ Se aplicó limpieza genérica (duplicados + imputación).")
@@ -316,3 +322,4 @@ for file in uploaded_files[:3]:
     )
 
     st.divider()
+

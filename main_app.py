@@ -6,7 +6,6 @@ from clean_inventario import clean_inventario_central
 from clean_transacciones import clean_transacciones_logistica
 from clean_feedback import clean_feedback_clientes
 
-
 from filters import apply_filters_ui, render_filters_panel
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
@@ -210,6 +209,13 @@ for f in uploaded_files:
 
 st.subheader("🧾 Diagnóstico y Limpieza (por dataset)")
 
+# ======================================================
+#  NUEVO: contenedores para integrar al final (NO rompe nada)
+# ======================================================
+inventario_clean = None
+transacciones_clean = None
+feedback_clean = None
+
 for file in uploaded_files[:3]:
     st.header(f"Dataset: {file.name}")
 
@@ -249,13 +255,22 @@ for file in uploaded_files[:3]:
         df_clean, decisiones_df = clean_inventario_central(df)
         st.success("✅ Se aplicó limpieza específica para inventario_central.")
 
+        # NUEVO: guardar para integración
+        inventario_clean = df_clean.copy()
+
     elif "transacciones" in fname or "logistica" in fname:
         df_clean, decisiones_df = clean_transacciones_logistica(df)
         st.success("✅ Se aplicó limpieza específica para transacciones_logistica.")
 
+        # NUEVO: guardar para integración
+        transacciones_clean = df_clean.copy()
+
     elif "feedback" in fname or "clientes" in fname:
         df_clean, decisiones_df = clean_feedback_clientes(df)
         st.success("✅ Se aplicó limpieza específica para feedback_clientes.")
+
+        # NUEVO: guardar para integración
+        feedback_clean = df_clean.copy()
 
     else:
         df_clean, decisiones_df = clean_dataset_generic(df)
@@ -323,3 +338,85 @@ for file in uploaded_files[:3]:
 
     st.divider()
 
+
+# ======================================================
+#  NUEVO: INTEGRACIÓN (JOIN) + DESCARGA SINGLE SOURCE OF TRUTH
+# ======================================================
+st.subheader("🔗 Integración de Datos: Single Source of Truth")
+st.caption("Se construye una tabla maestra usando transacciones como tabla principal (LEFT JOIN).")
+
+if transacciones_clean is None:
+    st.warning("⚠️ Para crear la Single Source of Truth debes subir transacciones_logistica.")
+else:
+    df_master = transacciones_clean.copy()
+
+    # ---------- JOIN con inventario por SKU ----------
+    if inventario_clean is not None:
+        # Detectar columnas SKU comunes
+        sku_col_trans = None
+        sku_col_inv = None
+
+        for c in ["SKU", "sku", "Sku"]:
+            if c in df_master.columns:
+                sku_col_trans = c
+                break
+
+        for c in ["SKU", "sku", "Sku"]:
+            if c in inventario_clean.columns:
+                sku_col_inv = c
+                break
+
+        if sku_col_trans is not None and sku_col_inv is not None:
+            df_master = df_master.merge(
+                inventario_clean,
+                left_on=sku_col_trans,
+                right_on=sku_col_inv,
+                how="left",
+                suffixes=("", "_inv")
+            )
+
+            # Flag SKU fantasma (no encontrado en inventario)
+            # Usamos la columna del inventario (sku_col_inv) para detectar match
+            df_master["sku_en_inventario"] = df_master[sku_col_inv].notna()
+
+            # Si existe "categoria" en el master y quedó nula por no match -> no_catalogado
+            if "categoria" in df_master.columns:
+                df_master["categoria"] = df_master["categoria"].fillna("no_catalogado")
+
+            st.success("✅ Join aplicado: transacciones + inventario (LEFT JOIN por SKU).")
+        else:
+            st.warning("⚠️ No se pudo hacer join con inventario: no se encontró columna SKU/sku en ambos datasets.")
+    else:
+        st.info("ℹ️ No se encontró inventario_central. Se omitió el join con inventario.")
+
+    # ---------- JOIN con feedback por transaccion_id ----------
+    if feedback_clean is not None:
+        if "transaccion_id" in df_master.columns and "transaccion_id" in feedback_clean.columns:
+            # Evitar duplicaciones si feedback tiene múltiples filas por transacción
+            feedback_one = feedback_clean.drop_duplicates(subset=["transaccion_id"]).copy()
+
+            df_master = df_master.merge(
+                feedback_one,
+                on="transaccion_id",
+                how="left",
+                suffixes=("", "_fb")
+            )
+
+            st.success("✅ Join aplicado: master + feedback (LEFT JOIN por transaccion_id).")
+        else:
+            st.warning("⚠️ No se pudo hacer join con feedback: falta columna transaccion_id en alguno.")
+    else:
+        st.info("ℹ️ No se encontró feedback_clientes. Se omitió el join con feedback.")
+
+    st.subheader("📌 Vista previa Single Source of Truth")
+    st.dataframe(df_master.head(50), use_container_width=True)
+
+    st.subheader("⬇️ Descargar Single Source of Truth")
+    master_csv = df_master.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Descargar single_source_of_truth.csv",
+        data=master_csv,
+        file_name="single_source_of_truth.csv",
+        mime="text/csv",
+        use_container_width=True
+    )

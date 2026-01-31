@@ -89,6 +89,11 @@ with st.sidebar:
         for i, file in enumerate(uploaded_files[:3]):
             st.subheader(f"🛠️ Filtros: {file.name}")
             df_temp = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+            # después de leer el archivo (streamlit UploadedFile) volvemos al inicio
+            try:
+                file.seek(0)
+            except Exception:
+                pass
 
             # Detectar candidatos para cada tipo de filtro
             date_candidates = detect_date_candidates(df_temp)
@@ -143,7 +148,19 @@ if not uploaded_files:
 else:
     for file in uploaded_files[:3]:
         st.header(f"Dataset: {file.name}")
-        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+        # aseguramos que el puntero del archivo esté al inicio antes de leer
+        try:
+            file.seek(0)
+        except Exception:
+            pass
+        try:
+            df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+        except pd.errors.EmptyDataError:
+            st.warning(f"El archivo {file.name} está vacío y será omitido.")
+            continue
+        except Exception as e:
+            st.warning(f"Error leyendo {file.name}: {e}")
+            continue
         
         # --- APLICACIÓN DE FILTROS ---
         f = filtros_activos[file.name]

@@ -29,6 +29,54 @@ def justify_imputation(col_data):
             return "Mediana", f"Sesgada (skew: {skewness:.2f})"
     return "Moda", "Variable categórica"
 
+
+def detect_date_candidates(df):
+    keywords = ['fecha', 'date', 'dia', 'day', 'timestamp', 'time']
+    candidates = []
+    for c in df.columns:
+        name = c.lower()
+        if any(k in name for k in keywords):
+            candidates.append(c)
+            continue
+        sample = df[c].dropna().head(20)
+        if len(sample) > 0:
+            parsed = pd.to_datetime(sample, errors='coerce')
+            if parsed.notna().sum() / len(sample) > 0.6:
+                candidates.append(c)
+    return candidates
+
+
+def detect_category_candidates(df):
+    keywords = ['categor', 'cat', 'tipo', 'segmento', 'category']
+    candidates = []
+    for c in df.columns:
+        name = c.lower()
+        dtype = str(df[c].dtype)
+        nunique = df[c].nunique(dropna=True)
+        if any(k in name for k in keywords):
+            candidates.append(c)
+            continue
+        if dtype.startswith('object') or dtype.startswith('category'):
+            # prefer columns with not-too-many distinct values
+            if nunique > 0 and nunique < max(100, len(df) * 0.5):
+                candidates.append(c)
+    return candidates
+
+
+def detect_bodega_candidates(df):
+    keywords = ['bodega', 'tienda', 'store', 'warehouse', 'sucursal', 'branch']
+    candidates = []
+    for c in df.columns:
+        name = c.lower()
+        nunique = df[c].nunique(dropna=True)
+        if any(k in name for k in keywords):
+            candidates.append(c)
+            continue
+        # heuristic: small-cardinality location/store-like columns
+        if (str(df[c].dtype).startswith('object') or str(df[c].dtype).startswith('category')) and nunique > 0 and nunique < min(500, max(10, len(df) * 0.2)):
+            candidates.append(c)
+    return candidates
+
 # --- SIDEBAR ESTRUCTURADA ---
 with st.sidebar:
     st.title("📂 Panel de Control")
@@ -41,27 +89,46 @@ with st.sidebar:
         for i, file in enumerate(uploaded_files[:3]):
             st.subheader(f"🛠️ Filtros: {file.name}")
             df_temp = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-            
-            # 1. Filtro de Fecha (Detección automática)
-            date_col = next((c for c in df_temp.columns if 'fecha' in c.lower()), None)
+
+            # Detectar candidatos para cada tipo de filtro
+            date_candidates = detect_date_candidates(df_temp)
+            cat_candidates = detect_category_candidates(df_temp)
+            bod_candidates = detect_bodega_candidates(df_temp)
+
+            # Selección por parte del usuario (puede elegir 'ninguna')
+            sel_date = st.selectbox(f"Columna de fecha para {file.name}", ['(ninguna)'] + date_candidates, key=f"sel_date_{i}")
             dates = (None, None)
-            if date_col:
-                df_temp[date_col] = pd.to_datetime(df_temp[date_col], errors='coerce')
-                min_d, max_d = df_temp[date_col].min(), df_temp[date_col].max()
-                dates = st.date_input(f"Rango de {date_col}", [min_d, max_d], key=f"date_{i}")
-            
-            # 2. Filtro de Categoría
-            cat_col = next((c for c in df_temp.columns if 'categor' in c.lower()), None)
-            cat_sel = st.multiselect(f"Categorías en {file.name}", df_temp[cat_col].unique(), key=f"cat_{i}") if cat_col else []
-            
-            # 3. Filtro de Bodega / Tienda
-            bod_col = next((c for c in df_temp.columns if 'bodega' in c.lower() or 'tienda' in c.lower()), None)
-            bod_sel = st.multiselect(f"Bodega/Tienda en {file.name}", df_temp[bod_col].unique(), key=f"bod_{i}") if bod_col else []
+            if sel_date and sel_date != '(ninguna)':
+                try:
+                    df_temp[sel_date] = pd.to_datetime(df_temp[sel_date], errors='coerce')
+                    min_d, max_d = df_temp[sel_date].min(), df_temp[sel_date].max()
+                    # si no hay fechas válidas, evitamos el date_input
+                    if pd.isna(min_d) or pd.isna(max_d):
+                        st.warning(f"La columna {sel_date} no contiene fechas reconocibles.")
+                    else:
+                        dates = st.date_input(f"Rango de {sel_date}", [min_d, max_d], key=f"date_{i}")
+                except Exception:
+                    st.warning(f"No se pudo convertir {sel_date} a datetime.")
+
+            sel_cat = st.selectbox(f"Columna de categoría para {file.name}", ['(ninguna)'] + cat_candidates, key=f"sel_cat_{i}")
+            cat_sel = []
+            if sel_cat and sel_cat != '(ninguna)':
+                values = df_temp[sel_cat].dropna().unique().tolist()
+                cat_sel = st.multiselect(f"Valores en {sel_cat}", values, key=f"cat_{i}")
+
+            sel_bod = st.selectbox(f"Columna de bodega/tienda para {file.name}", ['(ninguna)'] + bod_candidates, key=f"sel_bod_{i}")
+            bod_sel = []
+            if sel_bod and sel_bod != '(ninguna)':
+                values = df_temp[sel_bod].dropna().unique().tolist()
+                bod_sel = st.multiselect(f"Valores en {sel_bod}", values, key=f"bod_{i}")
             
             filtros_activos[file.name] = {
-                'date_col': date_col, 'dates': dates,
-                'cat_col': cat_col, 'cat_sel': cat_sel,
-                'bod_col': bod_col, 'bod_sel': bod_sel
+                'date_col': None if sel_date == '(ninguna)' else sel_date,
+                'dates': dates,
+                'cat_col': None if sel_cat == '(ninguna)' else sel_cat,
+                'cat_sel': cat_sel,
+                'bod_col': None if sel_bod == '(ninguna)' else sel_bod,
+                'bod_sel': bod_sel
             }
             st.divider()
 

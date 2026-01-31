@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
 
@@ -31,12 +30,12 @@ def outlier_iqr_stats(series: pd.Series):
 
 def get_healthcheck_report(df: pd.DataFrame):
     """
-    Reporte completo:
-    - nulidad
+    Reporte de métricas iniciales:
+    - % nulidad por columna
     - tipos
     - duplicados
-    - outliers numéricos
-    - min/max para inspección rápida
+    - magnitud de outliers (IQR) en numéricas
+    - min/max para ver extremos rápidamente
     """
     duplicated_rows = int(df.duplicated().sum())
 
@@ -67,6 +66,7 @@ def get_healthcheck_report(df: pd.DataFrame):
         report.loc[col, "IQR Lower"] = lower
         report.loc[col, "IQR Upper"] = upper
 
+    # ordenar por severidad
     report = report.sort_values(
         by=["Nulidad (%)", "Outliers (%)", "Únicos (#)"],
         ascending=[False, False, True]
@@ -86,40 +86,36 @@ def get_healthcheck_report(df: pd.DataFrame):
     return report, resumen
 
 
-def justify_imputation(col_data: pd.Series):
-    if pd.api.types.is_numeric_dtype(col_data):
-        skewness = col_data.skew()
-        if abs(skewness) < 0.5:
-            return "Media", f"Distribución simétrica (skew: {skewness:.2f})"
-        else:
-            return "Mediana", f"Distribución sesgada (skew: {skewness:.2f})"
-    return "Moda", "Variable categórica"
+# =========================
+#   BUSINESS FINDINGS SAFE
+# =========================
+def safe_numeric(series: pd.Series) -> pd.Series:
+    """Convierte a numérico sin romper la app (strings -> NaN)."""
+    return pd.to_numeric(series, errors="coerce")
 
 
 def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
     """
-    Retorna una tabla de hallazgos de negocio por dataset.
-    inventory_df se usa para validar integridad referencial en transacciones.
+    Hallazgos de negocio (robustos a tipos object).
+    OJO: Solo diagnóstico, NO limpia nada.
     """
     findings = []
 
     def add(issue, metric, detail=""):
-        findings.append({
-            "Hallazgo": issue,
-            "Métrica": metric,
-            "Detalle": detail
-        })
+        findings.append({"Hallazgo": issue, "Métrica": int(metric), "Detalle": detail})
 
     lname = name.lower()
 
     # --- INVENTARIO ---
     if "inventario" in lname:
         if "Stock_Actual" in df.columns:
-            neg = int((df["Stock_Actual"] < 0).sum())
+            stock = safe_numeric(df["Stock_Actual"])
+            neg = int((stock < 0).sum())
             add("Stock negativo", neg, "Existencias < 0 (inconsistencia contable)")
 
         if "Costo_Unitario_USD" in df.columns:
-            zero_or_neg = int((df["Costo_Unitario_USD"] <= 0).sum())
+            costo = safe_numeric(df["Costo_Unitario_USD"])
+            zero_or_neg = int((costo <= 0).sum())
             add("Costo <= 0", zero_or_neg, "Costos en 0 o negativos")
 
         if "Ultima_Revision" in df.columns:
@@ -128,8 +124,9 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             add("Fechas inválidas (Ultima_Revision)", invalid, "No parseables a datetime")
 
         if "Lead_Time_Dias" in df.columns:
-            extreme = int((df["Lead_Time_Dias"] > 365).sum())
-            add("Lead Time extremo (>365 días)", extreme, "Sospechoso para logística")
+            lt = safe_numeric(df["Lead_Time_Dias"])  # <- FIX del error
+            extreme = int((lt > 365).sum())
+            add("Lead Time extremo (>365 días)", extreme, "Valores logísticos sospechosos")
 
     # --- TRANSACCIONES ---
     if "transacciones" in lname or "logistica" in lname:
@@ -139,26 +136,29 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             add("Fechas inválidas (Fecha_Venta)", invalid, "Formato inconsistente")
 
         if "Tiempo_Entrega_Real" in df.columns:
-            extreme = int((df["Tiempo_Entrega_Real"] > 365).sum())
+            t = safe_numeric(df["Tiempo_Entrega_Real"])
+            extreme = int((t > 365).sum())
             add("Tiempo entrega extremo (>365 días)", extreme, "Ej: 999 días")
 
         if inventory_df is not None and "SKU_ID" in df.columns and "SKU_ID" in inventory_df.columns:
             missing = df[~df["SKU_ID"].isin(inventory_df["SKU_ID"])]
-            add("SKUs sin maestro (inventario)", int(len(missing)), "Ventas con SKU inexistente")
+            add("SKUs sin maestro (inventario)", len(missing), "Ventas con SKU inexistente")
 
     # --- FEEDBACK ---
     if "feedback" in lname or "clientes" in lname:
         if "Edad_Cliente" in df.columns:
-            impossible = int((df["Edad_Cliente"] > 110).sum())
+            edad = safe_numeric(df["Edad_Cliente"])
+            impossible = int((edad > 110).sum())
             add("Edad imposible (>110)", impossible, "Ej: 195 años")
 
         if "Satisfaccion_NPS" in df.columns:
-            below = int((df["Satisfaccion_NPS"] < -100).sum())
-            above = int((df["Satisfaccion_NPS"] > 100).sum())
+            nps = safe_numeric(df["Satisfaccion_NPS"])
+            below = int((nps < -100).sum())
+            above = int((nps > 100).sum())
             add("NPS fuera de rango [-100,100]", below + above, "Requiere normalización")
 
         dup = int(df.duplicated().sum())
-        add("Duplicados detectados (posibles intencionales)", dup, "Validar si deben eliminarse")
+        add("Duplicados detectados", dup, "Pueden ser intencionales, revisar criterio")
 
     return pd.DataFrame(findings)
 
@@ -215,7 +215,7 @@ def detect_bodega_candidates(df):
 # =========================
 #         UI SIDEBAR
 # =========================
-st.title("🛡️ Data Healthcheck Pro (Separado del EDA)")
+st.title("🛡️ Data Healthcheck Pro (Métricas Iniciales)")
 
 with st.sidebar:
     st.title("📂 Panel de Control")
@@ -234,7 +234,6 @@ with st.sidebar:
         for i, file in enumerate(uploaded_files[:3]):
             st.subheader(f"🛠️ Filtros: {file.name}")
 
-            # Leer dataset para detectar columnas candidatas
             try:
                 df_temp = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
             except Exception as e:
@@ -315,10 +314,10 @@ with st.sidebar:
 #        MAIN BODY
 # =========================
 if not uploaded_files:
-    st.info("👈 Sube los archivos para ejecutar Healthcheck y luego EDA.")
+    st.info("👈 Sube los archivos para generar métricas de Healthcheck.")
     st.stop()
 
-# Referencia inventario para integridad referencial (si existe)
+# Referencia inventario para integridad referencial
 inventory_ref = None
 for f in uploaded_files:
     if "inventario" in f.name.lower():
@@ -329,176 +328,60 @@ for f in uploaded_files:
             inventory_ref = None
         break
 
+st.subheader("🧾 Métricas Iniciales de Calidad (Healthcheck)")
 
-# Tabs: Healthcheck separado del EDA
-tab_health, tab_eda = st.tabs(["🛡️ Healthcheck", "📊 EDA (Gráficas)"])
+for file in uploaded_files[:3]:
+    st.header(f"Dataset: {file.name}")
 
-# =========================
-#         TAB HEALTH
-# =========================
-with tab_health:
-    st.subheader("🛡️ Módulo de Healthcheck (Calidad del Dataset)")
-    st.caption("Incluye nulidad por columna, duplicados y magnitud de outliers + reglas de negocio.")
+    try:
+        file.seek(0)
+    except Exception:
+        pass
 
-    for file in uploaded_files[:3]:
-        st.header(f"Dataset: {file.name}")
+    try:
+        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+    except pd.errors.EmptyDataError:
+        st.warning(f"El archivo {file.name} está vacío y será omitido.")
+        continue
+    except Exception as e:
+        st.warning(f"Error leyendo {file.name}: {e}")
+        continue
 
-        try:
-            file.seek(0)
-        except Exception:
-            pass
+    # Aplicar filtros
+    f = filtros_activos.get(file.name, {})
+    df_filtered = df.copy()
 
-        try:
-            df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-        except pd.errors.EmptyDataError:
-            st.warning(f"El archivo {file.name} está vacío y será omitido.")
-            continue
-        except Exception as e:
-            st.warning(f"Error leyendo {file.name}: {e}")
-            continue
+    if f.get('date_col') and f.get('dates') and len(f['dates']) == 2 and f['dates'][0] and f['dates'][1]:
+        df_filtered[f['date_col']] = pd.to_datetime(df_filtered[f['date_col']], errors='coerce')
+        df_filtered = df_filtered[
+            (df_filtered[f['date_col']].dt.date >= f['dates'][0]) &
+            (df_filtered[f['date_col']].dt.date <= f['dates'][1])
+        ]
 
-        # --- APLICACIÓN DE FILTROS ---
-        f = filtros_activos.get(file.name, {})
-        df_filtered = df.copy()
+    if f.get('cat_sel'):
+        df_filtered = df_filtered[df_filtered[f['cat_col']].isin(f['cat_sel'])]
 
-        if f.get('date_col') and f.get('dates') and len(f['dates']) == 2 and f['dates'][0] and f['dates'][1]:
-            df_filtered[f['date_col']] = pd.to_datetime(df_filtered[f['date_col']], errors='coerce')
-            df_filtered = df_filtered[
-                (df_filtered[f['date_col']].dt.date >= f['dates'][0]) &
-                (df_filtered[f['date_col']].dt.date <= f['dates'][1])
-            ]
+    if f.get('bod_sel'):
+        df_filtered = df_filtered[df_filtered[f['bod_col']].isin(f['bod_sel'])]
 
-        if f.get('cat_sel'):
-            df_filtered = df_filtered[df_filtered[f['cat_col']].isin(f['cat_sel'])]
+    # Healthcheck
+    report, resumen = get_healthcheck_report(df_filtered)
 
-        if f.get('bod_sel'):
-            df_filtered = df_filtered[df_filtered[f['bod_col']].isin(f['bod_sel'])]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Filas", resumen["filas"])
+    m2.metric("Columnas", resumen["columnas"])
+    m3.metric("Duplicados", resumen["duplicados"])
+    m4.metric("% Nulos total", f'{resumen["pct_nulos_total"]}%')
 
-        st.write(f"**Registros filtrados:** {len(df_filtered)}")
+    st.subheader("📌 Métricas por columna (Nulidad, Outliers, Tipos)")
+    st.dataframe(report, use_container_width=True)
 
-        # --- HEALTHCHECK ANTES / DESPUÉS ---
-        col1, col2 = st.columns(2)
+    st.subheader("🧠 Hallazgos de negocio")
+    findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
 
-        with col1:
-            st.subheader("🔍 Antes (estado actual)")
-            report_before, resumen_before = get_healthcheck_report(df_filtered)
+    if findings.empty:
+        st.success("No se detectaron hallazgos de negocio con las reglas actuales.")
+    else:
+        st.dataframe(findings, use_container_width=True)
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Filas", resumen_before["filas"])
-            m2.metric("Columnas", resumen_before["columnas"])
-            m3.metric("Duplicados", resumen_before["duplicados"])
-            m4.metric("% Nulos total", f'{resumen_before["pct_nulos_total"]}%')
-
-            st.dataframe(report_before, use_container_width=True)
-
-        # Limpieza
-        df_clean = df_filtered.drop_duplicates().copy()
-
-        decisiones = []
-        for col in df_clean.columns:
-            if df_clean[col].isnull().any():
-                metodo, razon = justify_imputation(df_clean[col])
-                decisiones.append({"Columna": col, "Decisión": f"Imputar con {metodo}", "Justificación": razon})
-
-                if metodo == "Media":
-                    fill_val = df_clean[col].mean()
-                elif metodo == "Mediana":
-                    fill_val = df_clean[col].median()
-                else:
-                    fill_val = df_clean[col].mode(dropna=True)[0]
-
-                df_clean[col] = df_clean[col].fillna(fill_val)
-
-        with col2:
-            st.subheader("✅ Después (limpieza automática)")
-            report_after, resumen_after = get_healthcheck_report(df_clean)
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Filas finales", resumen_after["filas"])
-            m2.metric("Duplicados eliminados", resumen_before["duplicados"])
-            m3.metric("Cols con nulos", resumen_after["cols_con_nulos"])
-            m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
-
-            st.dataframe(report_after, use_container_width=True)
-
-        # Reglas de negocio (hallazgos)
-        st.subheader("🧠 Hallazgos de negocio (Data Quality Rules)")
-        findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
-
-        if findings.empty:
-            st.success("No se detectaron hallazgos de negocio con las reglas actuales.")
-        else:
-            st.dataframe(findings, use_container_width=True)
-
-        # Decisiones éticas
-        st.info("### ⚖️ Decisión Ética (Imputación)")
-        if decisiones:
-            st.table(pd.DataFrame(decisiones))
-        else:
-            st.write("Sin nulos detectados en la selección.")
-
-        st.divider()
-
-
-# =========================
-#          TAB EDA
-# =========================
-with tab_eda:
-    st.subheader("📊 EDA (Gráficas)")
-    st.caption("Este tab queda separado para que el Healthcheck sea la primera capa de diagnóstico.")
-
-    for file in uploaded_files[:3]:
-        st.header(f"EDA: {file.name}")
-
-        try:
-            file.seek(0)
-        except Exception:
-            pass
-
-        try:
-            df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-        except Exception as e:
-            st.warning(f"No se pudo leer {file.name}: {e}")
-            continue
-
-        # Aplicar filtros también al EDA
-        f = filtros_activos.get(file.name, {})
-        df_filtered = df.copy()
-
-        if f.get('date_col') and f.get('dates') and len(f['dates']) == 2 and f['dates'][0] and f['dates'][1]:
-            df_filtered[f['date_col']] = pd.to_datetime(df_filtered[f['date_col']], errors='coerce')
-            df_filtered = df_filtered[
-                (df_filtered[f['date_col']].dt.date >= f['dates'][0]) &
-                (df_filtered[f['date_col']].dt.date <= f['dates'][1])
-            ]
-
-        if f.get('cat_sel'):
-            df_filtered = df_filtered[df_filtered[f['cat_col']].isin(f['cat_sel'])]
-
-        if f.get('bod_sel'):
-            df_filtered = df_filtered[df_filtered[f['bod_col']].isin(f['bod_sel'])]
-
-        st.write(f"**Registros filtrados para EDA:** {len(df_filtered)}")
-
-        # Gráficas simples (placeholder inicial)
-        num_cols = df_filtered.select_dtypes(include=[np.number]).columns.tolist()
-
-        if not num_cols:
-            st.info("No hay columnas numéricas para graficar.")
-            st.divider()
-            continue
-
-        col_to_plot = st.selectbox(
-            f"Selecciona una variable numérica ({file.name})",
-            num_cols,
-            key=f"eda_col_{file.name}"
-        )
-
-        fig, ax = plt.subplots()
-        ax.hist(df_filtered[col_to_plot].dropna(), bins=30)
-        ax.set_title(f"Histograma: {col_to_plot}")
-        ax.set_xlabel(col_to_plot)
-        ax.set_ylabel("Frecuencia")
-        st.pyplot(fig)
-
-        st.divider()
+    st.divider()

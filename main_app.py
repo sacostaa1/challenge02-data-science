@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+
 from clean_inventario import clean_inventario_central
+from clean_transacciones import clean_transacciones_logistica  # ✅ NUEVO IMPORT
+
 from filters import apply_filters_ui, render_filters_panel
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
@@ -108,7 +111,7 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             invalid = int(parsed.isna().sum())
             add("Fechas inválidas (Ultima_Revision)", invalid, "No parseables a datetime")
 
-        # inventory cleaning rules moved to clean_inventario.py (imported above)
+    # (Si luego quieres, aquí podemos agregar checks para transacciones también)
 
     return pd.DataFrame(findings)
 
@@ -234,16 +237,23 @@ for file in uploaded_files[:3]:
     st.dataframe(report_before, use_container_width=True)
 
     # ==============
-    # CLEANING (specific inventory rules)
+    # CLEANING (specific rules by dataset)
     # ==============
     st.subheader("🧹 Limpieza aplicada")
 
-    if "inventario_central" in file.name.lower() or "inventario" in file.name.lower():
+    fname = file.name.lower()
+
+    if "inventario" in fname:
         df_clean, decisiones_df = clean_inventario_central(df)
-        st.success("Se aplicó limpieza específica para inventario_central.")
+        st.success("✅ Se aplicó limpieza específica para inventario_central.")
+
+    elif "transacciones" in fname or "logistica" in fname:
+        df_clean, decisiones_df = clean_transacciones_logistica(df)
+        st.success("✅ Se aplicó limpieza específica para transacciones_logistica.")
+
     else:
         df_clean, decisiones_df = clean_dataset_generic(df)
-        st.info("Se aplicó limpieza genérica (duplicados + imputación).")
+        st.info("ℹ️ Se aplicó limpieza genérica (duplicados + imputación).")
 
     # ==============
     # HEALTHCHECK AFTER
@@ -258,16 +268,22 @@ for file in uploaded_files[:3]:
     m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
 
     st.dataframe(report_after, use_container_width=True)
-    # ==============
-    # FILTRADO SOBRE DATA LIMPIA (delegado a filters.render_filters_panel)
-    # ==============
-    df_filtered = render_filters_panel(df_clean, file.name, key_prefix=file.name, report_func=get_healthcheck_report)
 
     # ==============
-    # BUSINESS FINDINGS
+    # FILTRADO SOBRE DATA LIMPIA
+    # ==============
+    df_filtered = render_filters_panel(
+        df_clean,
+        file.name,
+        key_prefix=file.name,
+        report_func=get_healthcheck_report
+    )
+
+    # ==============
+    # BUSINESS FINDINGS (sobre data limpia/filtrada)
     # ==============
     st.subheader("🧠 Hallazgos de negocio (Data Quality Rules)")
-    findings = dataset_business_checks(file.name, df, inventory_df=inventory_ref)
+    findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
     if findings.empty:
         st.success("No se detectaron hallazgos con las reglas actuales.")
     else:
@@ -300,4 +316,3 @@ for file in uploaded_files[:3]:
     )
 
     st.divider()
-

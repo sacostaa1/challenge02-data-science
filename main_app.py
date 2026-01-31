@@ -112,8 +112,6 @@ def dataset_business_checks(name: str, df: pd.DataFrame, inventory_df=None):
             invalid = int(parsed.isna().sum())
             add("Fechas inválidas (Ultima_Revision)", invalid, "No parseables a datetime")
 
-    # (Si luego quieres, aquí podemos agregar checks para transacciones también)
-
     return pd.DataFrame(findings)
 
 
@@ -207,225 +205,448 @@ for f in uploaded_files:
             inventory_ref = None
         break
 
-st.subheader("🧾 Diagnóstico y Limpieza (por dataset)")
 
 # ======================================================
-#  NUEVO: contenedores para integrar al final (NO rompe nada)
+#  TABS: separación Healthcheck/Limpieza vs EDA
 # ======================================================
-inventario_clean = None
-transacciones_clean = None
-feedback_clean = None
+tab_health, tab_eda = st.tabs(["🛡️ Healthcheck + Limpieza + Integración", "📊 EDA Dashboard"])
 
-for file in uploaded_files[:3]:
-    st.header(f"Dataset: {file.name}")
 
-    try:
-        file.seek(0)
-    except Exception:
-        pass
+# ======================================================
+#  TAB 1: TODO lo actual (SIN cambiar funcionalidad)
+# ======================================================
+with tab_health:
+    st.subheader("🧾 Diagnóstico y Limpieza (por dataset)")
 
-    try:
-        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-    except Exception as e:
-        st.warning(f"Error leyendo {file.name}: {e}")
-        continue
+    # ======================================================
+    #  contenedores para integrar al final (NO rompe nada)
+    # ======================================================
+    inventario_clean = None
+    transacciones_clean = None
+    feedback_clean = None
 
-    # ==============
-    # HEALTHCHECK BEFORE
-    # ==============
-    st.subheader("🔍 Healthcheck (Antes)")
-    report_before, resumen_before = get_healthcheck_report(df)
+    for file in uploaded_files[:3]:
+        st.header(f"Dataset: {file.name}")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Filas", resumen_before["filas"])
-    m2.metric("Columnas", resumen_before["columnas"])
-    m3.metric("Duplicados", resumen_before["duplicados"])
-    m4.metric("% Nulos total", f'{resumen_before["pct_nulos_total"]}%')
+        try:
+            file.seek(0)
+        except Exception:
+            pass
 
-    st.dataframe(report_before, use_container_width=True)
+        try:
+            df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+        except Exception as e:
+            st.warning(f"Error leyendo {file.name}: {e}")
+            continue
 
-    # ==============
-    # CLEANING (specific rules by dataset)
-    # ==============
-    st.subheader("🧹 Limpieza aplicada")
+        # ==============
+        # HEALTHCHECK BEFORE
+        # ==============
+        st.subheader("🔍 Healthcheck (Antes)")
+        report_before, resumen_before = get_healthcheck_report(df)
 
-    fname = file.name.lower()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Filas", resumen_before["filas"])
+        m2.metric("Columnas", resumen_before["columnas"])
+        m3.metric("Duplicados", resumen_before["duplicados"])
+        m4.metric("% Nulos total", f'{resumen_before["pct_nulos_total"]}%')
 
-    if "inventario" in fname:
-        df_clean, decisiones_df = clean_inventario_central(df)
-        st.success("✅ Se aplicó limpieza específica para inventario_central.")
+        st.dataframe(report_before, use_container_width=True)
 
-        # NUEVO: guardar para integración
-        inventario_clean = df_clean.copy()
+        # ==============
+        # CLEANING (specific rules by dataset)
+        # ==============
+        st.subheader("🧹 Limpieza aplicada")
 
-    elif "transacciones" in fname or "logistica" in fname:
-        df_clean, decisiones_df = clean_transacciones_logistica(df)
-        st.success("✅ Se aplicó limpieza específica para transacciones_logistica.")
+        fname = file.name.lower()
 
-        # NUEVO: guardar para integración
-        transacciones_clean = df_clean.copy()
+        if "inventario" in fname:
+            df_clean, decisiones_df = clean_inventario_central(df)
+            st.success("✅ Se aplicó limpieza específica para inventario_central.")
 
-    elif "feedback" in fname or "clientes" in fname:
-        df_clean, decisiones_df = clean_feedback_clientes(df)
-        st.success("✅ Se aplicó limpieza específica para feedback_clientes.")
+            # guardar para integración
+            inventario_clean = df_clean.copy()
 
-        # NUEVO: guardar para integración
-        feedback_clean = df_clean.copy()
+        elif "transacciones" in fname or "logistica" in fname:
+            df_clean, decisiones_df = clean_transacciones_logistica(df)
+            st.success("✅ Se aplicó limpieza específica para transacciones_logistica.")
 
+            # guardar para integración
+            transacciones_clean = df_clean.copy()
+
+        elif "feedback" in fname or "clientes" in fname:
+            df_clean, decisiones_df = clean_feedback_clientes(df)
+            st.success("✅ Se aplicó limpieza específica para feedback_clientes.")
+
+            # guardar para integración
+            feedback_clean = df_clean.copy()
+
+        else:
+            df_clean, decisiones_df = clean_dataset_generic(df)
+            st.info("ℹ️ Se aplicó limpieza genérica (duplicados + imputación).")
+
+        # ==============
+        # HEALTHCHECK AFTER
+        # ==============
+        st.subheader("✅ Healthcheck (Después)")
+        report_after, resumen_after = get_healthcheck_report(df_clean)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Filas finales", resumen_after["filas"])
+        m2.metric("Cols con nulos", resumen_after["cols_con_nulos"])
+        m3.metric("Duplicados (después)", resumen_after["duplicados"])
+        m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
+
+        st.dataframe(report_after, use_container_width=True)
+
+        # ==============
+        # FILTRADO SOBRE DATA LIMPIA
+        # ==============
+        df_filtered = render_filters_panel(
+            df_clean,
+            file.name,
+            key_prefix=file.name,
+            report_func=get_healthcheck_report
+        )
+
+        # ==============
+        # BUSINESS FINDINGS (sobre data limpia/filtrada)
+        # ==============
+        st.subheader("🧠 Hallazgos de negocio (Data Quality Rules)")
+        findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
+        if findings.empty:
+            st.success("No se detectaron hallazgos con las reglas actuales.")
+        else:
+            st.dataframe(findings, use_container_width=True)
+
+        # ==============
+        # ETHICAL DECISION MODULE
+        # ==============
+        st.subheader("⚖️ Decisión Ética (Qué eliminé y qué imputé)")
+        st.caption("Incluye normalizaciones, imputaciones y eliminaciones de filas con justificación.")
+
+        if decisiones_df.empty:
+            st.info("No se registraron decisiones (dataset sin cambios).")
+        else:
+            st.dataframe(decisiones_df, use_container_width=True)
+
+        # ==============
+        # DOWNLOAD CLEAN CSV
+        # ==============
+        st.subheader("⬇️ Descargar dataset limpio")
+
+        clean_csv = df_clean.to_csv(index=False).encode("utf-8")
+        clean_name = file.name.replace(".csv", "").replace(".xlsx", "")
+        st.download_button(
+            label=f"📥 Descargar {clean_name}_clean.csv",
+            data=clean_csv,
+            file_name=f"{clean_name}_clean.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+        st.divider()
+
+    # ======================================================
+    #  INTEGRACIÓN (JOIN) + DESCARGA SINGLE SOURCE OF TRUTH
+    # ======================================================
+    st.subheader("🔗 Integración de Datos: Single Source of Truth")
+    st.caption("Se construye una tabla maestra usando transacciones como tabla principal (LEFT JOIN).")
+
+    df_master = None
+
+    if transacciones_clean is None:
+        st.warning("⚠️ Para crear la Single Source of Truth debes subir transacciones_logistica.")
     else:
-        df_clean, decisiones_df = clean_dataset_generic(df)
-        st.info("ℹ️ Se aplicó limpieza genérica (duplicados + imputación).")
+        df_master = transacciones_clean.copy()
 
-    # ==============
-    # HEALTHCHECK AFTER
-    # ==============
-    st.subheader("✅ Healthcheck (Después)")
-    report_after, resumen_after = get_healthcheck_report(df_clean)
+        # ---------- JOIN con inventario por SKU ----------
+        if inventario_clean is not None:
+            sku_col_trans = None
+            sku_col_inv = None
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Filas finales", resumen_after["filas"])
-    m2.metric("Cols con nulos", resumen_after["cols_con_nulos"])
-    m3.metric("Duplicados (después)", resumen_after["duplicados"])
-    m4.metric("Cols con outliers", resumen_after["cols_con_outliers"])
+            for c in ["SKU", "sku", "Sku", "SKU_ID"]:
+                if c in df_master.columns:
+                    sku_col_trans = c
+                    break
 
-    st.dataframe(report_after, use_container_width=True)
+            for c in ["SKU", "sku", "Sku", "SKU_ID"]:
+                if c in inventario_clean.columns:
+                    sku_col_inv = c
+                    break
 
-    # ==============
-    # FILTRADO SOBRE DATA LIMPIA
-    # ==============
-    df_filtered = render_filters_panel(
-        df_clean,
-        file.name,
-        key_prefix=file.name,
-        report_func=get_healthcheck_report
-    )
+            if sku_col_trans is not None and sku_col_inv is not None:
+                df_master = df_master.merge(
+                    inventario_clean,
+                    left_on=sku_col_trans,
+                    right_on=sku_col_inv,
+                    how="left",
+                    suffixes=("", "_inv"),
+                    indicator=True
+                )
 
-    # ==============
-    # BUSINESS FINDINGS (sobre data limpia/filtrada)
-    # ==============
-    st.subheader("🧠 Hallazgos de negocio (Data Quality Rules)")
-    findings = dataset_business_checks(file.name, df_filtered, inventory_df=inventory_ref)
-    if findings.empty:
-        st.success("No se detectaron hallazgos con las reglas actuales.")
+                df_master["sku_en_inventario"] = df_master["_merge"].eq("both")
+                sku_fantasmas = int((df_master["_merge"] == "left_only").sum())
+                df_master.drop(columns=["_merge"], inplace=True)
+
+                if "categoria" in df_master.columns:
+                    df_master["categoria"] = df_master["categoria"].fillna("no_catalogado")
+
+                st.success("✅ Join aplicado: transacciones + inventario (LEFT JOIN por SKU).")
+                st.info(f"📌 SKUs fantasma detectados (ventas sin SKU en inventario): {sku_fantasmas}")
+            else:
+                st.warning("⚠️ No se pudo hacer join con inventario: no se encontró columna SKU/sku en ambos datasets.")
+        else:
+            st.info("ℹ️ No se encontró inventario_central. Se omitió el join con inventario.")
+
+        # ---------- JOIN con feedback por transaccion_id ----------
+        if feedback_clean is not None:
+            if "Transaccion_ID" in df_master.columns and "Transaccion_ID" in feedback_clean.columns:
+                feedback_one = feedback_clean.drop_duplicates(subset=["Transaccion_ID"]).copy()
+
+                df_master = df_master.merge(
+                    feedback_one,
+                    on="Transaccion_ID",
+                    how="left",
+                    suffixes=("", "_fb")
+                )
+
+                st.success("✅ Join aplicado: master + feedback (LEFT JOIN por transaccion_id).")
+            else:
+                st.warning("⚠️ No se pudo hacer join con feedback: falta columna transaccion_id en alguno.")
+        else:
+            st.info("ℹ️ No se encontró feedback_clientes. Se omitió el join con feedback.")
+
+        st.subheader("📌 Vista previa Single Source of Truth")
+        st.dataframe(df_master.head(50), use_container_width=True)
+
+        st.subheader("⬇️ Descargar Single Source of Truth")
+        master_csv = df_master.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Descargar single_source_of_truth.csv",
+            data=master_csv,
+            file_name="single_source_of_truth.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+
+# ======================================================
+#  TAB 2: EDA Dashboard (SEPARADO)
+# ======================================================
+with tab_eda:
+    st.title("📊 EDA Dashboard")
+    st.caption("Exploración univariada, bivariada y visualizaciones típicas de un dashboard.")
+
+    # Dataset base del EDA
+    df_eda = None
+
+    # Usar df_master si existe (Single Source of Truth)
+    if "df_master" in locals() and df_master is not None and not df_master.empty:
+        df_eda = df_master.copy()
+        st.success("✅ Dataset EDA: Single Source of Truth (df_master).")
     else:
-        st.dataframe(findings, use_container_width=True)
+        st.warning("⚠️ No hay Single Source of Truth disponible. Usando fallback al primer dataset limpio encontrado.")
+        if transacciones_clean is not None:
+            df_eda = transacciones_clean.copy()
+            st.info("📌 Fallback: transacciones_clean")
+        elif inventario_clean is not None:
+            df_eda = inventario_clean.copy()
+            st.info("📌 Fallback: inventario_clean")
+        elif feedback_clean is not None:
+            df_eda = feedback_clean.copy()
+            st.info("📌 Fallback: feedback_clean")
 
-    # ==============
-    # ETHICAL DECISION MODULE
-    # ==============
-    st.subheader("⚖️ Decisión Ética (Qué eliminé y qué imputé)")
-    st.caption("Incluye normalizaciones, imputaciones y eliminaciones de filas con justificación.")
+    if df_eda is None or df_eda.empty:
+        st.error("❌ No hay datos para EDA.")
+        st.stop()
 
-    if decisiones_df.empty:
-        st.info("No se registraron decisiones (dataset sin cambios).")
-    else:
-        st.dataframe(decisiones_df, use_container_width=True)
+    # ==========================================
+    # Filtros del dashboard
+    # ==========================================
+    st.subheader("🎛️ Filtros (EDA)")
+    df_dash = df_eda.copy()
 
-    # ==============
-    # DOWNLOAD CLEAN CSV
-    # ==============
-    st.subheader("⬇️ Descargar dataset limpio")
+    with st.expander("🔎 Configurar filtros", expanded=True):
+        cat_cols = df_dash.select_dtypes(include=["object", "category"]).columns.tolist()
+        num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
 
-    clean_csv = df_clean.to_csv(index=False).encode("utf-8")
-    clean_name = file.name.replace(".csv", "").replace(".xlsx", "")
-    st.download_button(
-        label=f"📥 Descargar {clean_name}_clean.csv",
-        data=clean_csv,
-        file_name=f"{clean_name}_clean.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
+        col_filter_cat = st.selectbox(
+            "Filtro categórico (opcional)",
+            ["(ninguno)"] + cat_cols
+        )
+
+        if col_filter_cat != "(ninguno)":
+            options = sorted(df_dash[col_filter_cat].dropna().astype(str).unique().tolist())
+            selected_opts = st.multiselect(
+                f"Valores en {col_filter_cat}",
+                options,
+                default=options[: min(10, len(options))]
+            )
+            if selected_opts:
+                df_dash = df_dash[df_dash[col_filter_cat].astype(str).isin(selected_opts)]
+
+        col_filter_num = st.selectbox(
+            "Filtro numérico por rango (opcional)",
+            ["(ninguno)"] + num_cols
+        )
+
+        if col_filter_num != "(ninguno)":
+            s = pd.to_numeric(df_dash[col_filter_num], errors="coerce").dropna()
+            if not s.empty:
+                min_v, max_v = float(s.min()), float(s.max())
+                r = st.slider(
+                    f"Rango para {col_filter_num}",
+                    min_value=min_v,
+                    max_value=max_v,
+                    value=(min_v, max_v)
+                )
+                df_dash = df_dash[(df_dash[col_filter_num] >= r[0]) & (df_dash[col_filter_num] <= r[1])]
+
+    st.write(f"📌 Filas después de filtros: **{len(df_dash)}**")
+    if df_dash.empty:
+        st.warning("⚠️ Con los filtros actuales no hay filas para graficar.")
+        st.stop()
+
+    # ==========================================
+    # KPIs
+    # ==========================================
+    st.subheader("📌 KPIs")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Filas", f"{df_dash.shape[0]}")
+    k2.metric("Columnas", f"{df_dash.shape[1]}")
+    k3.metric("Nulos totales", f"{int(df_dash.isnull().sum().sum())}")
+    k4.metric("Duplicados", f"{int(df_dash.duplicated().sum())}")
+
+    extra = st.columns(4)
+
+    if "sku_en_inventario" in df_dash.columns:
+        extra[0].metric("% SKU en inventario", f"{round(df_dash['sku_en_inventario'].mean()*100,2)}%")
+
+    if "rating_producto" in df_dash.columns:
+        extra[1].metric("Rating promedio", f"{round(pd.to_numeric(df_dash['rating_producto'], errors='coerce').mean(),2)}")
+
+    if "satisfaccion_NPS" in df_dash.columns:
+        extra[2].metric("NPS promedio", f"{round(pd.to_numeric(df_dash['satisfaccion_NPS'], errors='coerce').mean(),2)}")
+
+    if "ticket_soporte_abierto" in df_dash.columns:
+        pct_tickets = round((df_dash["ticket_soporte_abierto"].astype(str).str.upper() == "SI").mean() * 100, 2)
+        extra[3].metric("% con ticket soporte", f"{pct_tickets}%")
 
     st.divider()
 
+    # ==========================================
+    # Univariado numérico
+    # ==========================================
+    st.subheader("📈 Univariado (Numéricas)")
+    num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
 
-# ======================================================
-#  NUEVO: INTEGRACIÓN (JOIN) + DESCARGA SINGLE SOURCE OF TRUTH
-# ======================================================
-st.subheader("🔗 Integración de Datos: Single Source of Truth")
-st.caption("Se construye una tabla maestra usando transacciones como tabla principal (LEFT JOIN).")
-
-if transacciones_clean is None:
-    st.warning("⚠️ Para crear la Single Source of Truth debes subir transacciones_logistica.")
-else:
-    df_master = transacciones_clean.copy()
-
-    # ---------- JOIN con inventario por SKU ----------
-    if inventario_clean is not None:
-        # Detectar columnas SKU comunes
-        sku_col_trans = None
-        sku_col_inv = None
-
-        for c in ["SKU", "sku", "Sku", "SKU_ID"]:
-            if c in df_master.columns:
-                sku_col_trans = c
-                break
-
-        for c in ["SKU", "sku", "Sku", "SKU_ID"]:
-            if c in inventario_clean.columns:
-                sku_col_inv = c
-                break
-
-        if sku_col_trans is not None and sku_col_inv is not None:
-            # Merge con indicador para detectar matches reales
-            df_master = df_master.merge(
-                inventario_clean,
-                left_on=sku_col_trans,
-                right_on=sku_col_inv,
-                how="left",
-                suffixes=("", "_inv"),
-                indicator=True
-            )
-
-            # Flag SKU encontrado o fantasma
-            df_master["sku_en_inventario"] = df_master["_merge"].eq("both")
-
-            # (Opcional) contar fantasmas para monitoreo
-            sku_fantasmas = int((df_master["_merge"] == "left_only").sum())
-
-            # Eliminar columna auxiliar del merge
-            df_master.drop(columns=["_merge"], inplace=True)
-
-            # Si existe "categoria" y quedó nula por no match -> no_catalogado
-            if "categoria" in df_master.columns:
-                df_master["categoria"] = df_master["categoria"].fillna("no_catalogado")
-
-            st.success("✅ Join aplicado: transacciones + inventario (LEFT JOIN por SKU).")
-            st.info(f"📌 SKUs fantasma detectados (ventas sin SKU en inventario): {sku_fantasmas}")
-
-        else:
-            st.warning("⚠️ No se pudo hacer join con inventario: no se encontró columna SKU/sku en ambos datasets.")
+    if not num_cols:
+        st.info("No hay columnas numéricas.")
     else:
-        st.info("ℹ️ No se encontró inventario_central. Se omitió el join con inventario.")
+        col_num = st.selectbox("Columna numérica", num_cols)
 
-    # ---------- JOIN con feedback por transaccion_id ----------
-    if feedback_clean is not None:
-        if "Transaccion_ID" in df_master.columns and "Transaccion_ID" in feedback_clean.columns:
-            # Evitar duplicaciones si feedback tiene múltiples filas por transacción
-            feedback_one = feedback_clean.drop_duplicates(subset=["Transaccion_ID"]).copy()
+        s = pd.to_numeric(df_dash[col_num], errors="coerce")
 
-            df_master = df_master.merge(
-                feedback_one,
-                on="Transaccion_ID",
-                how="left",
-                suffixes=("", "_fb")
-            )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Media", f"{s.mean():.2f}" if not np.isnan(s.mean()) else "N/A")
+        c2.metric("Mediana", f"{s.median():.2f}" if not np.isnan(s.median()) else "N/A")
+        c3.metric("Std", f"{s.std():.2f}" if not np.isnan(s.std()) else "N/A")
+        c4.metric("Skew", f"{s.skew():.2f}" if not np.isnan(s.skew()) else "N/A")
 
-            st.success("✅ Join aplicado: master + feedback (LEFT JOIN por transaccion_id).")
-        else:
-            st.warning("⚠️ No se pudo hacer join con feedback: falta columna transaccion_id en alguno.")
+        st.write("**Histograma (bins)**")
+        st.bar_chart(s.dropna().value_counts(bins=20).sort_index())
+
+        st.write("**Describe**")
+        st.dataframe(s.describe().to_frame().T, use_container_width=True)
+
+    st.divider()
+
+    # ==========================================
+    # Univariado categórico
+    # ==========================================
+    st.subheader("🧩 Univariado (Categóricas)")
+    cat_cols = df_dash.select_dtypes(include=["object", "category"]).columns.tolist()
+
+    if not cat_cols:
+        st.info("No hay columnas categóricas.")
     else:
-        st.info("ℹ️ No se encontró feedback_clientes. Se omitió el join con feedback.")
+        col_cat = st.selectbox("Columna categórica", cat_cols)
 
-    st.subheader("📌 Vista previa Single Source of Truth")
-    st.dataframe(df_master.head(50), use_container_width=True)
+        freq = (
+            df_dash[col_cat]
+            .astype(str)
+            .fillna("N/A")
+            .value_counts()
+            .head(15)
+        )
 
-    st.subheader("⬇️ Descargar Single Source of Truth")
-    master_csv = df_master.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Descargar single_source_of_truth.csv",
-        data=master_csv,
-        file_name="single_source_of_truth.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
+        st.write("**Top 15**")
+        st.dataframe(freq.reset_index().rename(columns={"index": col_cat, col_cat: "conteo"}), use_container_width=True)
+
+        st.write("**Gráfico**")
+        st.bar_chart(freq)
+
+    st.divider()
+
+    # ==========================================
+    # Bivariado num vs num
+    # ==========================================
+    st.subheader("🔁 Bivariado (Numérica vs Numérica)")
+    num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
+
+    if len(num_cols) < 2:
+        st.info("Se requieren al menos 2 numéricas.")
+    else:
+        x_col = st.selectbox("Eje X", num_cols, index=0)
+        y_col = st.selectbox("Eje Y", num_cols, index=1)
+
+        scatter_df = df_dash[[x_col, y_col]].dropna()
+        st.scatter_chart(scatter_df, x=x_col, y=y_col)
+
+        corr_val = scatter_df[x_col].corr(scatter_df[y_col])
+        st.metric("Correlación (Pearson)", f"{corr_val:.3f}" if corr_val is not None else "N/A")
+
+    st.divider()
+
+    # ==========================================
+    # Bivariado cat vs num
+    # ==========================================
+    st.subheader("📦 Bivariado (Categórica vs Numérica)")
+    cat_cols = df_dash.select_dtypes(include=["object", "category"]).columns.tolist()
+    num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
+
+    if not cat_cols or not num_cols:
+        st.info("Se requiere al menos 1 categórica y 1 numérica.")
+    else:
+        col_cat2 = st.selectbox("Categoría", cat_cols)
+        col_num2 = st.selectbox("Métrica numérica", num_cols)
+
+        grouped = (
+            df_dash.groupby(col_cat2)[col_num2]
+            .mean(numeric_only=True)
+            .sort_values(ascending=False)
+            .head(15)
+        )
+
+        st.dataframe(grouped.reset_index().rename(columns={col_num2: f"promedio_{col_num2}"}), use_container_width=True)
+        st.bar_chart(grouped)
+
+    st.divider()
+
+    # ==========================================
+    # Matriz correlación
+    # ==========================================
+    st.subheader("🧠 Matriz de Correlación")
+    num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
+
+    if len(num_cols) < 2:
+        st.info("No hay suficientes numéricas para correlación.")
+    else:
+        corr = df_dash[num_cols].corr(numeric_only=True)
+        st.dataframe(corr, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("📄 Vista previa del dataset filtrado (EDA)")
+    st.dataframe(df_dash.head(100), use_container_width=True)

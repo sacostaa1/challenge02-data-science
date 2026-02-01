@@ -584,8 +584,21 @@ with tab_eda:
         st.dataframe(corr_zone.head(15), use_container_width=True)
     
         st.write("### 📊 Correlación por zona (Top 15 crítico)")
-        chart_df = corr_zone.head(15).set_index("zona_operativa")["corr_tiempo_vs_nps"]
-        st.bar_chart(chart_df)
+
+        corr_zone_plot = corr_zone.head(15).copy()
+        
+        # Crear label para graficar (sin depender de zona_operativa)
+        if "Ciudad_Destino" in corr_zone_plot.columns and "Bodega_Origen" in corr_zone_plot.columns:
+            corr_zone_plot["zona_label"] = (
+                corr_zone_plot["Ciudad_Destino"].astype(str).str.strip()
+                + " | " +
+                corr_zone_plot["Bodega_Origen"].astype(str).str.strip()
+            )
+            chart_df = corr_zone_plot.set_index("zona_label")["corr_tiempo_vs_nps"]
+            st.bar_chart(chart_df)
+        else:
+            st.warning("⚠️ No se puede graficar porque faltan columnas Ciudad_Destino y/o Bodega_Origen en corr_zone.")
+
     
     kpis_zone = kpis_logistics_by_city_warehouse(df_dash, min_rows=30)
     
@@ -593,8 +606,20 @@ with tab_eda:
         st.write("### 🧾 KPIs logísticos por zona (para decidir cambio de operador)")
         st.dataframe(kpis_zone.head(15), use_container_width=True)
     
+
         st.write("### 🏁 Ranking de zonas por score de riesgo logístico")
-        st.bar_chart(kpis_zone.head(15).set_index("zona_operativa")["score_riesgo_logistico"])
+        
+        kpis_zone_plot = kpis_zone.head(15).copy()
+        
+        if "Ciudad_Destino" in kpis_zone_plot.columns and "Bodega_Origen" in kpis_zone_plot.columns:
+            kpis_zone_plot["zona_label"] = (
+                kpis_zone_plot["Ciudad_Destino"].astype(str).str.strip()
+                + " | " +
+                kpis_zone_plot["Bodega_Origen"].astype(str).str.strip()
+            )
+            st.bar_chart(kpis_zone_plot.set_index("zona_label")["score_riesgo_logistico"])
+        else:
+            st.warning("⚠️ No se puede graficar ranking porque faltan columnas Ciudad_Destino y/o Bodega_Origen en kpis_zone.")
     
     st.divider()
 
@@ -957,6 +982,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

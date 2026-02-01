@@ -7,6 +7,7 @@ from clean_transacciones import clean_transacciones_logistica
 from clean_feedback import clean_feedback_clientes
 
 from filters import apply_filters_ui, render_filters_panel
+from ai_module import generate_ai_strategy
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
 
@@ -178,6 +179,9 @@ st.title("🛡️ Data Healthcheck Pro (Diagnóstico + Limpieza Dirigida)")
 
 with st.sidebar:
     st.title("📂 Panel de Control")
+    st.subheader("🤖 Configuración IA")
+    api_key = st.text_input("Groq API Key (Llama-3)", type="password", help="Obtenla en console.groq.com")
+    st.divider()
     uploaded_files = st.file_uploader(
         "Sube tus datasets",
         type=['csv', 'xlsx'],
@@ -308,6 +312,19 @@ with tab_health:
             key_prefix=file.name,
             report_func=get_healthcheck_report
         )
+
+        # ======================================================
+        #  NUEVO: MÓDULO DE INTELIGENCIA ARTIFICIAL (LLAMA-3)
+        # ======================================================
+        st.subheader("🤖 Recomendación Estratégica (IA Llama-3)")
+        
+        if st.button(f"Generar Estrategia con IA - {file.name}", key=f"ai_btn_{file.name}"):
+            if not api_key:
+                st.error("Debes ingresar la API Key en el panel lateral.")
+            else:
+                with st.spinner("Llama-3 analizando métricas en tiempo real..."):
+                    estrategia = generate_ai_strategy(df_filtered, api_key, file.name)
+                    st.markdown(f'<div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #ff4b4b;">{estrategia}</div>', unsafe_allow_html=True)
 
         # ==============
         # BUSINESS FINDINGS (sobre data limpia/filtrada)

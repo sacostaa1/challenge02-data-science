@@ -584,7 +584,22 @@ with tab_eda:
         st.dataframe(corr_zone.head(15), use_container_width=True)
     
         st.write("### 📊 Correlación por zona (Top 15 crítico)")
-        chart_df = corr_zone.head(15).set_index("zona_operativa")["corr_tiempo_vs_nps"]
+        cif corr_zone is not None and not corr_zone.empty:
+        corr_zone_plot = corr_zone.head(15).copy()
+    
+        # Crear etiqueta ciudad|bodega SOLO para el chart
+        corr_zone_plot["zona_label"] = (
+            corr_zone_plot["Ciudad_Destino"].astype(str).str.strip()
+            + " | " +
+            corr_zone_plot["Bodega_Origen"].astype(str).str.strip()
+        )
+    
+        chart_df = corr_zone_plot.set_index("zona_label")["corr_tiempo_vs_nps"]
+    
+        st.bar_chart(chart_df)
+    else:
+        st.info("ℹ️ No hay suficientes datos para calcular correlaciones por ciudad y bodega.")
+
         st.bar_chart(chart_df)
     
     kpis_zone = kpis_logistics_by_city_warehouse(df_dash, min_rows=30)
@@ -957,6 +972,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

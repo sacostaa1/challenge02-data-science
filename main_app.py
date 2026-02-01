@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 
 from clean_inventario import clean_inventario_central
 from clean_transacciones import clean_transacciones_logistica
@@ -594,7 +595,118 @@ with tab_eda:
     
         st.write("### 🏁 Ranking de zonas por score de riesgo logístico")
         st.bar_chart(kpis_zone.head(15).set_index("zona_operativa")["score_riesgo_logistico"])
+    
+    st.divider()
 
+    # ===========================
+    # DIAGNÓSTICO DE FIDELIDAD (P4)
+    # ===========================
+    st.subheader("🧾 Diagnóstico de Fidelidad (P4)")
+    st.caption("¿Existen categorías con alta disponibilidad (stock alto) pero sentimiento cliente negativo?")
+
+    # intentamos usar los datasets limpios cargados en la pestaña de limpieza
+    inv = inventario_clean if 'inventario_clean' in locals() else None
+    fb = feedback_clean if 'feedback_clean' in locals() else None
+
+    if inv is None and fb is None:
+        st.warning("No hay datasets limpios de inventario ni feedback disponibles para este diagnóstico.")
+    else:
+        # detectar columnas relevantes
+        def find_col_ci(df, candidates):
+            if df is None:
+                return None
+            for c in df.columns:
+                if c.lower() in [x.lower() for x in candidates]:
+                    return c
+            return None
+
+        stock_col = find_col_ci(inv, ["Stock_Actual", "stock_actual", "stock", "cantidad_stock"]) if inv is not None else None
+        cat_col = find_col_ci(inv, ["categoria", "categoria_producto", "categoria_producto" ]) if inv is not None else None
+        sku_inv = find_col_ci(inv, ["SKU", "sku", "Sku", "SKU_ID"]) if inv is not None else None
+
+        sku_fb = find_col_ci(fb, ["SKU", "sku", "Sku", "SKU_ID"]) if fb is not None else None
+        nps_fb_col = find_col_ci(fb, ["satisfaccion_NPS", "satisfaccion_nps", "nps", "NPS"]) if fb is not None else None
+
+        # Preparar agregados inventario por categoría
+        inv_agg = None
+        if inv is not None and cat_col is not None and stock_col is not None:
+            inv_temp = inv.copy()
+            inv_temp[stock_col] = pd.to_numeric(inv_temp[stock_col], errors='coerce').fillna(0)
+            inv_agg = (
+                inv_temp.groupby(cat_col)[stock_col]
+                .agg(total_stock='sum', avg_stock='mean', n_items='count')
+                .reset_index()
+                .sort_values('total_stock', ascending=False)
+            )
+
+        # Preparar agregados feedback (por SKU o categoría si es posible)
+        fb_agg = None
+        if fb is not None:
+            fb_temp = fb.copy()
+            if nps_fb_col is not None:
+                fb_temp['nps_num'] = pd.to_numeric(fb_temp[nps_fb_col], errors='coerce')
+            else:
+                fb_temp['nps_num'] = pd.NA
+
+            # si tenemos SKU en ambos, join para obtener categoria por feedback
+            if sku_fb is not None and sku_inv is not None and inv is not None and cat_col is not None:
+                    merged = fb_temp.merge(inv[[sku_inv, cat_col]].drop_duplicates(), left_on=sku_fb, right_on=sku_inv, how='left')
+                    grp = merged.groupby(cat_col).agg(n_feedback=('nps_num','count'), avg_nps=('nps_num','mean')).reset_index()
+                    pct = merged.groupby(cat_col)['nps_num'].apply(lambda x: (x<=6).mean() if x.notna().any() else np.nan).reset_index(name='pct_nps_bajo')
+                    fb_agg = grp.merge(pct, on=cat_col, how='left')
+                    if 'pct_nps_bajo' in fb_agg.columns:
+                        fb_agg['pct_nps_bajo'] = (fb_agg['pct_nps_bajo'] * 100).round(2)
+            else:
+                # fallback: agregamos por SKU si no hay categoria
+                if sku_fb is not None:
+                    fb_agg = (
+                        fb_temp.groupby(sku_fb)
+                        .agg(n_feedback=('nps_num','count'), avg_nps=('nps_num','mean'))
+                        .reset_index()
+                    )
+
+        # ------------------ GRAFICA 1: Avg NPS por categoria ------------------
+        if inv_agg is not None and fb_agg is not None and cat_col in inv_agg.columns and cat_col in fb_agg.columns:
+            merged_cat = inv_agg.merge(fb_agg, on=cat_col, how='left')
+            merged_cat['avg_nps'] = pd.to_numeric(merged_cat.get('avg_nps', pd.Series([np.nan]*len(merged_cat))), errors='coerce')
+
+            st.markdown("**1) Promedio NPS por Categoría vs Stock**")
+            fig1 = px.bar(
+                merged_cat.sort_values('avg_nps', ascending=True),
+                x=cat_col,
+                y='avg_nps',
+                color='total_stock',
+                color_continuous_scale='RdYlGn_r',
+                labels={cat_col: 'Categoría', 'avg_nps': 'Avg NPS', 'total_stock': 'Stock total'},
+                title='Avg NPS por Categoría (color = stock total)'
+            )
+            fig1.update_layout(xaxis={'categoryorder':'total descending'}, height=450)
+            st.plotly_chart(fig1, use_container_width=True)
+
+            # Barra auxiliar: stock por categoria
+            st.markdown("**2) Stock total por Categoría**")
+            fig2 = px.bar(merged_cat.sort_values('total_stock', ascending=False), x=cat_col, y='total_stock', title='Stock total por Categoría')
+            fig2.update_layout(height=350)
+            st.plotly_chart(fig2, use_container_width=True)
+
+            # Scatter: stock vs avg_nps
+            st.markdown("**3) Stock vs Avg NPS (bubble size = n_feedback)**")
+            merged_cat['n_feedback'] = merged_cat.get('n_feedback', merged_cat.get('n_items', 0)).fillna(0)
+            fig3 = px.scatter(
+                merged_cat,
+                x='total_stock',
+                y='avg_nps',
+                size='n_feedback',
+                hover_name=cat_col,
+                title='Stock total vs Avg NPS por Categoría',
+                labels={'total_stock':'Stock total', 'avg_nps':'Avg NPS'}
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+            st.markdown("**Interpretación rápida:** categorías con alto stock y avg NPS bajo aparecen abajo a la derecha. Estas son candidatas a revisar: calidad de producto o problemas logísticos/precio.")
+
+        else:
+            st.info("No se pudieron construir las gráficas por falta de columnas comunes (categoria/stock en inventario y NPS en feedback). Si existe SKU en ambos datasets, súbelos para emparejar datos.")
 
 
     st.divider()

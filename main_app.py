@@ -10,6 +10,7 @@ from filters import apply_filters_ui, render_filters_panel
 from ai_module import generate_ai_strategy
 
 from features_profitability import add_profitability_features, profitability_summary
+from features_logistics import add_logistics_features, zone_corr_delivery_vs_nps, zone_kpis_logistics
 
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
@@ -564,6 +565,38 @@ with tab_eda:
         else:
             st.info("ℹ️ No se puede agrupar por SKU porque no se detectó una columna SKU.")
 
+
+    # ===========================
+    # FEATURES LOGÍSTICAS (P2)
+    # ===========================
+    df_dash = add_logistics_features(df_dash, sla_days=5)
+
+    st.subheader("🚚 Crisis Logística y Cuellos de Botella (P2)")
+    st.caption("Correlación entre Tiempo de Entrega y NPS bajo por Ciudad/Bodega.")
+    
+    corr_zone = zone_corr_delivery_vs_nps(df_dash, min_rows=30)
+    
+    if corr_zone.empty:
+        st.warning("⚠️ No hay suficientes datos para calcular correlación por zona (min_rows=30).")
+    else:
+        st.write("### 📉 Zonas con correlación más negativa (más crítico)")
+        st.dataframe(corr_zone.head(15), use_container_width=True)
+    
+        st.write("### 📊 Correlación por zona (Top 15 crítico)")
+        chart_df = corr_zone.head(15).set_index("zona_operativa")["corr_tiempo_vs_nps"]
+        st.bar_chart(chart_df)
+    
+    kpis_zone = zone_kpis_logistics(df_dash, min_rows=30)
+    
+    if not kpis_zone.empty:
+        st.write("### 🧾 KPIs logísticos por zona (para decidir cambio de operador)")
+        st.dataframe(kpis_zone.head(15), use_container_width=True)
+    
+        st.write("### 🏁 Ranking de zonas por score de riesgo logístico")
+        st.bar_chart(kpis_zone.head(15).set_index("zona_operativa")["score_riesgo_logistico"])
+
+
+
     st.divider()
 
     # -------------------------
@@ -777,4 +810,5 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 

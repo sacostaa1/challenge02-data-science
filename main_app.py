@@ -648,14 +648,32 @@ with tab_eda:
             else:
                 fb_temp['nps_num'] = pd.NA
 
-            # si tenemos SKU en ambos, join para obtener categoria por feedback
+            # ratings
+            rating_prod_col = find_col_ci(fb_temp, ["Rating_Producto", "rating_producto", "Rating_Producto", "rating"]) 
+            rating_log_col = find_col_ci(fb_temp, ["Rating_Logistica", "rating_logistica", "rating_logistica"]) 
+            if rating_prod_col is not None:
+                fb_temp['rating_producto_num'] = pd.to_numeric(fb_temp[rating_prod_col], errors='coerce')
+            else:
+                fb_temp['rating_producto_num'] = pd.NA
+
+            if rating_log_col is not None:
+                fb_temp['rating_logistica_num'] = pd.to_numeric(fb_temp[rating_log_col], errors='coerce')
+            else:
+                fb_temp['rating_logistica_num'] = pd.NA
+
+            # si tenemos SKU en ambos y categoria en inventario, join para obtener categoria por feedback
             if sku_fb is not None and sku_inv is not None and inv is not None and cat_col is not None:
-                    merged = fb_temp.merge(inv[[sku_inv, cat_col]].drop_duplicates(), left_on=sku_fb, right_on=sku_inv, how='left')
-                    grp = merged.groupby(cat_col).agg(n_feedback=('nps_num','count'), avg_nps=('nps_num','mean')).reset_index()
-                    pct = merged.groupby(cat_col)['nps_num'].apply(lambda x: (x<=6).mean() if x.notna().any() else np.nan).reset_index(name='pct_nps_bajo')
-                    fb_agg = grp.merge(pct, on=cat_col, how='left')
-                    if 'pct_nps_bajo' in fb_agg.columns:
-                        fb_agg['pct_nps_bajo'] = (fb_agg['pct_nps_bajo'] * 100).round(2)
+                merged = fb_temp.merge(inv[[sku_inv, cat_col]].drop_duplicates(), left_on=sku_fb, right_on=sku_inv, how='left')
+                grp = merged.groupby(cat_col).agg(
+                    n_feedback=('nps_num','count'),
+                    avg_nps=('nps_num','mean'),
+                    avg_rating_producto=('rating_producto_num','mean'),
+                    avg_rating_logistica=('rating_logistica_num','mean')
+                ).reset_index()
+                pct = merged.groupby(cat_col)['nps_num'].apply(lambda x: (x<=6).mean() if x.notna().any() else np.nan).reset_index(name='pct_nps_bajo')
+                fb_agg = grp.merge(pct, on=cat_col, how='left')
+                if 'pct_nps_bajo' in fb_agg.columns:
+                    fb_agg['pct_nps_bajo'] = (fb_agg['pct_nps_bajo'] * 100).round(2)
             else:
                 # fallback: agregamos por SKU si no hay categoria
                 if sku_fb is not None:
@@ -670,15 +688,32 @@ with tab_eda:
             merged_cat = inv_agg.merge(fb_agg, on=cat_col, how='left')
             merged_cat['avg_nps'] = pd.to_numeric(merged_cat.get('avg_nps', pd.Series([np.nan]*len(merged_cat))), errors='coerce')
 
-            st.markdown("**1) Promedio NPS por Categoría vs Stock**")
+            # permitir elegir métrica de sentimiento para graficar
+            metrics_available = []
+            if 'avg_nps' in merged_cat.columns:
+                metrics_available.append(('avg_nps','Satisfacción NPS'))
+            if 'avg_rating_producto' in merged_cat.columns:
+                metrics_available.append(('avg_rating_producto','Rating Producto'))
+            if 'avg_rating_logistica' in merged_cat.columns:
+                metrics_available.append(('avg_rating_logistica','Rating Logística'))
+
+            chosen_label = 'avg_nps'
+            sel_label = 'Satisfacción NPS'
+            if metrics_available:
+                opts = [lab for (_,lab) in metrics_available]
+                sel_label = st.selectbox('Métrica de sentimiento a graficar', opts, index=0)
+                label_map = {lab:col for (col,lab) in metrics_available}
+                chosen_label = label_map.get(sel_label, 'avg_nps')
+
+            st.markdown("**1) Promedio de Sentimiento por Categoría vs Stock**")
             fig1 = px.bar(
-                merged_cat.sort_values('avg_nps', ascending=True),
+                merged_cat.sort_values(chosen_label, ascending=True),
                 x=cat_col,
-                y='avg_nps',
+                y=chosen_label,
                 color='total_stock',
                 color_continuous_scale='RdYlGn_r',
-                labels={cat_col: 'Categoría', 'avg_nps': 'Avg NPS', 'total_stock': 'Stock total'},
-                title='Avg NPS por Categoría (color = stock total)'
+                labels={cat_col: 'Categoría', chosen_label: sel_label, 'total_stock': 'Stock total'},
+                title=f'{sel_label} por Categoría (color = stock total)'
             )
             fig1.update_layout(xaxis={'categoryorder':'total descending'}, height=450)
             st.plotly_chart(fig1, use_container_width=True)
@@ -689,21 +724,21 @@ with tab_eda:
             fig2.update_layout(height=350)
             st.plotly_chart(fig2, use_container_width=True)
 
-            # Scatter: stock vs avg_nps
-            st.markdown("**3) Stock vs Avg NPS (bubble size = n_feedback)**")
+            # Scatter: stock vs métrica seleccionada
+            st.markdown(f"**3) Stock vs {sel_label} (bubble size = n_feedback)**")
             merged_cat['n_feedback'] = merged_cat.get('n_feedback', merged_cat.get('n_items', 0)).fillna(0)
             fig3 = px.scatter(
                 merged_cat,
                 x='total_stock',
-                y='avg_nps',
+                y=chosen_label,
                 size='n_feedback',
                 hover_name=cat_col,
-                title='Stock total vs Avg NPS por Categoría',
-                labels={'total_stock':'Stock total', 'avg_nps':'Avg NPS'}
+                title=f'Stock total vs {sel_label} por Categoría',
+                labels={'total_stock':'Stock total', chosen_label:sel_label}
             )
             st.plotly_chart(fig3, use_container_width=True)
 
-            st.markdown("**Interpretación rápida:** categorías con alto stock y avg NPS bajo aparecen abajo a la derecha. Estas son candidatas a revisar: calidad de producto o problemas logísticos/precio.")
+            st.markdown("**Interpretación rápida:** categorías con alto stock y sentimiento (NPS/Rating) bajo aparecen con alta stock a la derecha y valores de sentimiento bajos. Esas categorías son candidatas a revisar: calidad de producto, desajuste entre expectativas y descripción, o problemas logísticos/precio.")
 
         else:
             st.info("No se pudieron construir las gráficas por falta de columnas comunes (categoria/stock en inventario y NPS en feedback). Si existe SKU en ambos datasets, súbelos para emparejar datos.")

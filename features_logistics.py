@@ -10,18 +10,16 @@ def _find_col(df: pd.DataFrame, candidates: list[str]):
     return None
 
 
-def _to_datetime_safe(s: pd.Series):
-    return pd.to_datetime(s, errors="coerce")
-
-
 def add_logistics_features(df: pd.DataFrame, sla_days: int = 5) -> pd.DataFrame:
     """
-    Agrega features mínimas y valiosas para análisis logístico:
-    - tiempo_entrega_dias
-    - nps (numérico)
-    - nps_bajo
-    - zona_operativa (ciudad|bodega)
-    - sla_incumplido
+    Agrega features mínimas para análisis logístico con tus columnas reales:
+    - tiempo_entrega_dias (desde Tiempo_Entrega_Real)
+    - nps (desde Satisfaccion_NPS)
+    - nps_bajo (<= 6)
+    - sla_incumplido (tiempo_entrega_dias > sla_days)
+
+    NOTA:
+    - NO crea zona_operativa porque el análisis se hará por (Ciudad_Destino, Bodega_Origen)
     """
     if df is None or df.empty:
         return df
@@ -29,42 +27,23 @@ def add_logistics_features(df: pd.DataFrame, sla_days: int = 5) -> pd.DataFrame:
     out = df.copy()
 
     # -----------------------------
-    # Detectar columnas relevantes
+    # Detectar columnas reales
     # -----------------------------
-    col_city = _find_col(out, ["Ciudad", "ciudad", "CITY", "city"])
-    col_warehouse = _find_col(out, ["Bodega", "bodega", "Warehouse", "warehouse", "Centro_Distribucion"])
-    col_nps = _find_col(out, ["satisfaccion_NPS", "NPS", "nps"])
-
-    # Posibles fechas (dependen del dataset)
-    col_fecha_compra = _find_col(out, ["Fecha_Compra", "fecha_compra", "Fecha", "fecha"])
-    col_fecha_despacho = _find_col(out, ["Fecha_Despacho", "fecha_despacho", "Fecha_Salida", "fecha_salida"])
-    col_fecha_entrega = _find_col(out, ["Fecha_Entrega", "fecha_entrega", "Entrega", "entrega"])
+    col_city = _find_col(out, ["Ciudad_Destino", "Ciudad", "ciudad"])
+    col_warehouse = _find_col(out, ["Bodega_Origen", "Bodega", "bodega"])
+    col_nps = _find_col(out, ["Satisfaccion_NPS", "satisfaccion_NPS", "NPS", "nps"])
+    col_lead = _find_col(out, ["Tiempo_Entrega_Real", "Tiempo_Entrega", "tiempo_entrega"])
 
     # -----------------------------
     # 1) Tiempo de entrega (días)
     # -----------------------------
-    # Si ya existe una columna "Tiempo_Entrega" o similar, la usamos.
-    col_lead = _find_col(out, ["Tiempo_Entrega", "tiempo_entrega", "Tiempo_Entrega_Dias", "lead_time_dias"])
-
     if col_lead is not None:
         out["tiempo_entrega_dias"] = pd.to_numeric(out[col_lead], errors="coerce")
     else:
-        # Calculamos usando fechas si están disponibles
-        tiempo = pd.Series([np.nan] * len(out))
+        # Si no existe, dejamos NaN (no inventamos con fechas)
+        out["tiempo_entrega_dias"] = np.nan
 
-        if col_fecha_entrega and col_fecha_despacho:
-            f_ent = _to_datetime_safe(out[col_fecha_entrega])
-            f_des = _to_datetime_safe(out[col_fecha_despacho])
-            tiempo = (f_ent - f_des).dt.total_seconds() / (3600 * 24)
-
-        elif col_fecha_entrega and col_fecha_compra:
-            f_ent = _to_datetime_safe(out[col_fecha_entrega])
-            f_com = _to_datetime_safe(out[col_fecha_compra])
-            tiempo = (f_ent - f_com).dt.total_seconds() / (3600 * 24)
-
-        out["tiempo_entrega_dias"] = pd.to_numeric(tiempo, errors="coerce")
-
-    # Limpieza básica: tiempos negativos no tienen sentido
+    # Tiempos negativos no tienen sentido
     out.loc[out["tiempo_entrega_dias"] < 0, "tiempo_entrega_dias"] = np.nan
 
     # -----------------------------
@@ -81,38 +60,37 @@ def add_logistics_features(df: pd.DataFrame, sla_days: int = 5) -> pd.DataFrame:
     out["nps_bajo"] = (out["nps"] <= 6).astype(int)
 
     # -----------------------------
-    # 4) Zona operativa (Ciudad | Bodega)
-    # -----------------------------
-    if col_city and col_warehouse:
-        out["zona_operativa"] = (
-            out[col_city].astype(str).fillna("N/A").str.strip()
-            + " | " +
-            out[col_warehouse].astype(str).fillna("N/A").str.strip()
-        )
-    elif col_city:
-        out["zona_operativa"] = out[col_city].astype(str).fillna("N/A").str.strip()
-    elif col_warehouse:
-        out["zona_operativa"] = out[col_warehouse].astype(str).fillna("N/A").str.strip()
-    else:
-        out["zona_operativa"] = "N/A"
-
-    # -----------------------------
-    # 5) SLA incumplido
+    # 4) SLA incumplido
     # -----------------------------
     out["sla_incumplido"] = (out["tiempo_entrega_dias"] > sla_days).astype(int)
+
+    # -----------------------------
+    # 5) Asegurar columnas base (para agrupaciones)
+    # -----------------------------
+    # Si no existen, las creamos como NaN para evitar errores downstream
+    if col_city is None:
+        out["Ciudad_Destino"] = np.nan
+    if col_warehouse is None:
+        out["Bodega_Origen"] = np.nan
 
     return out
 
 
-def zone_corr_delivery_vs_nps(df: pd.DataFrame, min_rows: int = 30) -> pd.DataFrame:
+def corr_delivery_vs_nps_by_city_warehouse(
+    df: pd.DataFrame,
+    min_rows: int = 30
+) -> pd.DataFrame:
     """
-    Calcula correlación (Pearson) entre tiempo_entrega_dias y nps por zona_operativa.
-    Devuelve ranking de zonas con mayor correlación negativa (más preocupante).
+    Correlación (Pearson) entre tiempo_entrega_dias y nps por combinación:
+    (Ciudad_Destino, Bodega_Origen)
+
+    Devuelve un ranking de los pares más críticos:
+    - correlación más NEGATIVA (a mayor tiempo, peor NPS)
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
-    needed = ["zona_operativa", "tiempo_entrega_dias", "nps"]
+    needed = ["Ciudad_Destino", "Bodega_Origen", "tiempo_entrega_dias", "nps"]
     for c in needed:
         if c not in df.columns:
             return pd.DataFrame()
@@ -120,50 +98,63 @@ def zone_corr_delivery_vs_nps(df: pd.DataFrame, min_rows: int = 30) -> pd.DataFr
     base = df[needed].copy()
     base["tiempo_entrega_dias"] = pd.to_numeric(base["tiempo_entrega_dias"], errors="coerce")
     base["nps"] = pd.to_numeric(base["nps"], errors="coerce")
-    base = base.dropna(subset=["zona_operativa", "tiempo_entrega_dias", "nps"])
+
+    # Solo filas completas
+    base = base.dropna(subset=["Ciudad_Destino", "Bodega_Origen", "tiempo_entrega_dias", "nps"])
 
     rows = []
-    for zone, g in base.groupby("zona_operativa"):
+    grouped = base.groupby(["Ciudad_Destino", "Bodega_Origen"])
+
+    for (city, wh), g in grouped:
         if len(g) < min_rows:
             continue
+
         corr = g["tiempo_entrega_dias"].corr(g["nps"])
+
         rows.append({
-            "zona_operativa": zone,
+            "Ciudad_Destino": city,
+            "Bodega_Origen": wh,
             "n": int(len(g)),
             "corr_tiempo_vs_nps": float(corr) if corr is not None else np.nan,
             "avg_tiempo_entrega": float(g["tiempo_entrega_dias"].mean()),
-            "avg_nps": float(g["nps"].mean())
+            "avg_nps": float(g["nps"].mean()),
+            "pct_nps_bajo": float((g["nps"] <= 6).mean() * 100)
         })
 
     out = pd.DataFrame(rows)
-
     if out.empty:
         return out
 
-    # Más crítico: correlación más NEGATIVA
+    # Más crítico: correlación más negativa
     out = out.sort_values(by="corr_tiempo_vs_nps", ascending=True).reset_index(drop=True)
     return out
 
 
-def zone_kpis_logistics(df: pd.DataFrame, min_rows: int = 30) -> pd.DataFrame:
+def kpis_logistics_by_city_warehouse(
+    df: pd.DataFrame,
+    min_rows: int = 30
+) -> pd.DataFrame:
     """
-    KPIs por zona:
-    - promedio de tiempo entrega
+    KPIs logísticos por (Ciudad_Destino, Bodega_Origen):
+    - promedio tiempo entrega
     - % NPS bajo
     - % SLA incumplido
+    - score_riesgo_logistico
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
-    needed = ["zona_operativa", "tiempo_entrega_dias", "nps_bajo", "sla_incumplido"]
+    needed = ["Ciudad_Destino", "Bodega_Origen", "tiempo_entrega_dias", "nps_bajo", "sla_incumplido"]
     for c in needed:
         if c not in df.columns:
             return pd.DataFrame()
 
-    g = df.dropna(subset=["zona_operativa"]).groupby("zona_operativa")
+    base = df.dropna(subset=["Ciudad_Destino", "Bodega_Origen"]).copy()
+
+    g = base.groupby(["Ciudad_Destino", "Bodega_Origen"])
 
     out = g.agg(
-        n=("zona_operativa", "size"),
+        n=("tiempo_entrega_dias", "size"),
         avg_tiempo_entrega=("tiempo_entrega_dias", "mean"),
         pct_nps_bajo=("nps_bajo", "mean"),
         pct_sla_incumplido=("sla_incumplido", "mean"),
@@ -171,12 +162,10 @@ def zone_kpis_logistics(df: pd.DataFrame, min_rows: int = 30) -> pd.DataFrame:
 
     out = out[out["n"] >= min_rows].copy()
 
-    # % bonitos
     out["pct_nps_bajo"] = (out["pct_nps_bajo"] * 100).round(2)
     out["pct_sla_incumplido"] = (out["pct_sla_incumplido"] * 100).round(2)
 
-    # ranking por combinación de "malo"
-    # (esto no es una columna auxiliar, es un score útil)
+    # Score simple para ranking (más alto = peor)
     out["score_riesgo_logistico"] = (
         out["avg_tiempo_entrega"].fillna(0) * 0.4
         + out["pct_nps_bajo"].fillna(0) * 0.4

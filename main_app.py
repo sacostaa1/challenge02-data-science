@@ -9,6 +9,9 @@ from clean_feedback import clean_feedback_clientes
 from filters import apply_filters_ui, render_filters_panel
 from ai_module import generate_ai_strategy
 
+from features_profitability import add_profitability_features, profitability_summary
+
+
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
 
 
@@ -484,6 +487,113 @@ with tab_eda:
     st.subheader("🎛️ Filtros (EDA)")
     df_dash = df_eda.copy()
 
+    # ======================================================
+    #  PREGUNTA 1: MARGEN NEGATIVO (Rentabilidad)
+    # ======================================================
+    st.subheader("💰 Pregunta 1: Fuga de Capital y Rentabilidad (Márgenes negativos)")
+    st.caption("Detecta SKUs vendidos con margen negativo y evalúa si es crítico por canal.")
+    
+    # Trabajamos sobre el dataset EDA base (idealmente df_master)
+    df_profit_base = df_eda.copy()
+    
+    df_profit, meta_profit = add_profitability_features(df_profit_base)
+    
+    # Mostrar warnings de detección de columnas
+    if meta_profit.get("warnings"):
+        for w in meta_profit["warnings"]:
+            st.warning(f"⚠️ {w}")
+    
+    # Si no se pudieron crear columnas, detenemos esta sección
+    if "margen_usd" not in df_profit.columns:
+        st.error("❌ No se pudieron calcular márgenes (faltan columnas base).")
+    else:
+        # KPIs
+        kpis = profitability_summary(df_profit)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Ingreso total (USD)", f"{kpis.get('total_ingreso_usd', 0)}")
+        c2.metric("Margen total (USD)", f"{kpis.get('total_margen_usd', 0)}")
+        c3.metric("# Transacciones con margen negativo", f"{kpis.get('transacciones_margen_negativo', 0)}")
+        c4.metric("Impacto margen negativo (USD)", f"{kpis.get('impacto_margen_negativo_usd', 0)}")
+    
+        st.divider()
+    
+        # -------------------------
+        # Tabla Top pérdidas
+        # -------------------------
+        st.markdown("### 📉 Top transacciones con peor margen")
+        cols_show = []
+    
+        # Mostrar columnas útiles si existen
+        for c in ["Transaccion_ID", "SKU", "Canal_Venta", "Ciudad_Destino", "Bodega_Origen"]:
+            if c in df_profit.columns:
+                cols_show.append(c)
+    
+        cols_show += ["ingreso_total_usd", "costo_total_usd", "margen_usd"]
+    
+        worst = (
+            df_profit[df_profit["margen_usd"].notna()]
+            .sort_values("margen_usd", ascending=True)
+            .head(20)
+        )
+    
+        st.dataframe(worst[cols_show], use_container_width=True)
+    
+        st.divider()
+    
+        # -------------------------
+        # Análisis por SKU (si existe)
+        # -------------------------
+        if meta_profit.get("col_sku") is not None:
+            sku_col = meta_profit["col_sku"]
+    
+            st.markdown("### 🧾 SKUs con margen total negativo (agregado)")
+            sku_agg = (
+                df_profit.groupby(sku_col)
+                .agg(
+                    transacciones=("margen_usd", "count"),
+                    ingreso_total=("ingreso_total_usd", "sum"),
+                    margen_total=("margen_usd", "sum"),
+                )
+                .sort_values("margen_total", ascending=True)
+                .head(15)
+            )
+    
+            st.dataframe(sku_agg, use_container_width=True)
+            st.bar_chart(sku_agg["margen_total"])
+    
+        else:
+            st.info("ℹ️ No se puede agrupar por SKU porque no se detectó una columna SKU.")
+
+    st.divider()
+
+    # -------------------------
+    # Comparación por canal (Online vs otros)
+    # -------------------------
+    if meta_profit.get("col_channel") is not None:
+        canal_col = meta_profit["col_channel"]
+
+        st.markdown("### 🌐 Comparación de margen por canal")
+        canal_agg = (
+            df_profit.groupby(canal_col)
+            .agg(
+                transacciones=("margen_usd", "count"),
+                ingreso_total=("ingreso_total_usd", "sum"),
+                margen_total=("margen_usd", "sum"),
+                pct_margen_neg=("margen_negativo", "mean"),
+            )
+        )
+
+        canal_agg["pct_margen_neg"] = (canal_agg["pct_margen_neg"] * 100).round(2)
+
+        st.dataframe(canal_agg, use_container_width=True)
+
+        st.markdown("**% transacciones con margen negativo por canal**")
+        st.bar_chart(canal_agg["pct_margen_neg"])
+
+    else:
+        st.info("ℹ️ No se puede comparar por canal porque no se detectó Canal_Venta.")
+
+
     with st.expander("🔎 Configurar filtros", expanded=True):
         cat_cols = df_dash.select_dtypes(include=["object", "category"]).columns.tolist()
         num_cols = df_dash.select_dtypes(include=[np.number]).columns.tolist()
@@ -667,3 +777,4 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+

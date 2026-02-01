@@ -584,13 +584,8 @@ with tab_eda:
         st.dataframe(corr_zone.head(15), use_container_width=True)
     
         st.write("### 📊 Correlación por zona (Top 15 crítico)")
-        # Validar que las columnas necesarias existan antes de construir la serie
-        if isinstance(corr_zone, pd.DataFrame) and {'zona_operativa', 'corr_tiempo_vs_nps'}.issubset(set(corr_zone.columns)):
-            chart_df = corr_zone.head(15).set_index("zona_operativa")["corr_tiempo_vs_nps"]
-            st.bar_chart(chart_df)
-        else:
-            st.warning("No se encontraron las columnas 'zona_operativa' o 'corr_tiempo_vs_nps' en el resultado de correlación por zona.")
-            st.dataframe(corr_zone.head(15), use_container_width=True)
+        chart_df = corr_zone.head(15).set_index("zona_operativa")["corr_tiempo_vs_nps"]
+        st.bar_chart(chart_df)
     
     kpis_zone = kpis_logistics_by_city_warehouse(df_dash, min_rows=30)
     
@@ -962,6 +957,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

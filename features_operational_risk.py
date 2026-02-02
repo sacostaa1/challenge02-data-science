@@ -81,26 +81,36 @@ def add_operational_risk_features(
         meta["warnings"].append("No se encontró columna Satisfaccion_NPS.")
 
     # -----------------------------
-    # 1) dias_desde_revision
+    # 1) dias_desde_revision (USANDO Fecha_Venta como referencia)
     # -----------------------------
+    col_fecha_venta = _find_col(out, ["Fecha_Venta"])
+    
     if col_last_review is not None:
         last_dt = _to_datetime_safe(out[col_last_review])
-
-        if reference_date is None:
-            ref_dt = pd.Timestamp.today().normalize()
+    
+        # Si existe Fecha_Venta, úsala como referencia por fila
+        if col_fecha_venta is not None:
+            sale_dt = _to_datetime_safe(out[col_fecha_venta])
+            out["dias_desde_revision"] = (sale_dt - last_dt).dt.days
+    
+            # Si la revisión ocurre después de la venta (dato raro), lo marcamos NaN
+            out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
+    
         else:
-            ref_dt = pd.to_datetime(reference_date, errors="coerce")
-            if pd.isna(ref_dt):
+            # fallback: si no hay Fecha_Venta, usa hoy o reference_date
+            if reference_date is None:
                 ref_dt = pd.Timestamp.today().normalize()
-                meta["warnings"].append("reference_date inválida, usando hoy().")
-
-        out["dias_desde_revision"] = (ref_dt - last_dt).dt.days
-        out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
+            else:
+                ref_dt = pd.to_datetime(reference_date, errors="coerce")
+                if pd.isna(ref_dt):
+                    ref_dt = pd.Timestamp.today().normalize()
+                    meta["warnings"].append("reference_date inválida, usando hoy().")
+    
+            out["dias_desde_revision"] = (ref_dt - last_dt).dt.days
+            out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
+    
     else:
         out["dias_desde_revision"] = np.nan
-
-    # flag revisión vieja (umbral fijo)
-    out["revision_desactualizada"] = (out["dias_desde_revision"] >= stale_days_threshold).astype(int)
 
     # -----------------------------
     # 2) ticket_soporte_bin

@@ -793,9 +793,6 @@ else:
     risk_by_wh = operational_risk_by_warehouse(df_ops, min_rows=20, blind_percentile=80)
 
 
-    st.write("NaN dias_desde_revision:", df_feat["dias_desde_revision"].isna().mean())
-    st.write(df_feat[["Fecha_Venta","Ultima_Revision","dias_desde_revision"]].head(10))
-
     if risk_by_wh.empty:
         st.warning("⚠️ No hay suficientes datos por bodega para calcular riesgo (min_rows=30).")
     else:
@@ -1074,6 +1071,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

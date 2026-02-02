@@ -349,8 +349,8 @@ with tab_health:
             else:
                 with st.spinner("Llama-3 analizando métricas en tiempo real..."):
                     estrategia = generate_ai_strategy(df_filtered, api_key, file.name)
-                    st.markdown(f'<div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #ff4b4b;">{estrategia}</div>', unsafe_allow_html=True)
-
+                    st.info("### 💡 Estrategia Sugerida")
+                    st.write(estrategia)
         # ==============
         # BUSINESS FINDINGS (sobre data limpia/filtrada)
         # ==============

@@ -782,7 +782,7 @@ else:
     
     df_ops, meta_ops = add_operational_risk_features(
         df_ops_base,
-        stale_days_threshold=30  # puedes cambiarlo a 15, 45, etc
+        stale_days_threshold=10  # puedes cambiarlo a 15, 45, etc
     )
 
     df_feat, meta = add_operational_risk_features(df_master)
@@ -1080,6 +1080,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

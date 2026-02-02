@@ -192,7 +192,7 @@ def operational_risk_by_warehouse(
     g = base.groupby("bodega_origen_clean")
 
     out = g.agg(
-        n=("bodega_origen_clean", "size"),
+        n_valid=("dias_desde_revision", "count"),
         avg_dias_desde_revision=("dias_desde_revision", "mean"),
         pct_revision_desactualizada=("revision_desactualizada", "mean"),
         pct_tickets=("ticket_soporte_bin", "mean"),
@@ -200,7 +200,7 @@ def operational_risk_by_warehouse(
         pct_nps_bajo=("nps_bajo", "mean"),
     ).reset_index()
 
-    out = out[out["n"] >= min_rows].copy()
+    out = out[out["n_valid"] >= min_rows].copy()
     if out.empty:
         return out
 

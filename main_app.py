@@ -826,21 +826,50 @@ else:
         st.divider()
     
         # -----------------------------
-        # Scatter: revisión vs tickets
-        # -----------------------------
-        st.markdown("### 📌 Relación: días desde revisión vs tasa de tickets (por bodega)")
-        scatter_df = operational_risk_scatter_df(df_ops, min_rows=20, blind_percentile=80)
-    
-        if scatter_df.empty:
-            st.info("No hay datos suficientes para scatter.")
+# Scatter: revisión vs tickets
+# -----------------------------
+st.markdown("### 📌 Relación: días desde revisión vs tasa de tickets (por bodega)")
+scatter_df = operational_risk_scatter_df(df_ops, min_rows=20, blind_percentile=80)
+
+if scatter_df.empty:
+    st.info("No hay datos suficientes para scatter.")
+else:
+    # ---- FIX: asegurar columnas esperadas y tipos numéricos ----
+    required_cols = ["avg_dias_desde_revision", "pct_tickets", "bodega_origen_clean", "avg_nps"]
+    missing = [c for c in required_cols if c not in scatter_df.columns]
+
+    if missing:
+        st.error(f"❌ No se puede graficar scatter: faltan columnas {missing}")
+        st.write("Columnas disponibles:", list(scatter_df.columns))
+    else:
+        # Detectar columna de tamaño (n o n_valid)
+        size_col = None
+        if "n" in scatter_df.columns:
+            size_col = "n"
+        elif "n_valid" in scatter_df.columns:
+            size_col = "n_valid"
+
+        # Convertir numéricas (Plotly explota si vienen como object)
+        scatter_df["avg_dias_desde_revision"] = pd.to_numeric(scatter_df["avg_dias_desde_revision"], errors="coerce")
+        scatter_df["pct_tickets"] = pd.to_numeric(scatter_df["pct_tickets"], errors="coerce")
+        scatter_df["avg_nps"] = pd.to_numeric(scatter_df["avg_nps"], errors="coerce")
+
+        # Si size no existe, creamos una constante para no romper
+        if size_col is None:
+            scatter_df["n_plot"] = 1
+            size_col = "n_plot"
+
+        # Eliminar filas inválidas
+        scatter_plot = scatter_df.dropna(subset=["avg_dias_desde_revision", "pct_tickets", "avg_nps"])
+
+        if scatter_plot.empty:
+            st.warning("⚠️ No hay filas válidas para graficar después de limpiar NaNs.")
         else:
-            import plotly.express as px
-    
             fig = px.scatter(
-                scatter_df,
+                scatter_plot,
                 x="avg_dias_desde_revision",
                 y="pct_tickets",
-                size="n",
+                size=size_col,
                 hover_name="bodega_origen_clean",
                 color="avg_nps",
                 title="Bodegas: antigüedad de revisión vs % tickets (color = NPS promedio)",
@@ -848,11 +877,12 @@ else:
                     "avg_dias_desde_revision": "Días promedio desde última revisión",
                     "pct_tickets": "% transacciones con ticket",
                     "avg_nps": "NPS promedio",
-                    "n": "# transacciones"
+                    size_col: "# transacciones"
                 }
             )
             fig.update_layout(height=450)
             st.plotly_chart(fig, use_container_width=True)
+
     
         st.divider()
     
@@ -1076,6 +1106,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

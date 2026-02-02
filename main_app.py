@@ -12,6 +12,14 @@ from ai_module import generate_ai_strategy
 
 from features_profitability import add_profitability_features, profitability_summary
 from features_logistics import add_logistics_features, corr_delivery_vs_nps_by_city_warehouse, kpis_logistics_by_city_warehouse
+from features_invisible_sales import (
+    add_invisible_sales_features,
+    invisible_sales_summary,
+    invisible_sales_by_sku,
+    invisible_sales_by_channel,
+    invisible_sales_by_city,
+    get_invisible_transactions
+)
 
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
@@ -620,6 +628,34 @@ with tab_eda:
             st.bar_chart(kpis_zone_plot.set_index("zona_label")["score_riesgo_logistico"])
         else:
             st.warning("⚠️ No se puede graficar ranking porque faltan columnas Ciudad_Destino y/o Bodega_Origen en kpis_zone.")
+
+
+    # ===========================
+    # Ventas invisibles (P3)
+    # ===========================
+    df_master_feat = add_invisible_sales_features(df_master)
+    
+    summary = invisible_sales_summary(df_master_feat)
+    
+    st.metric("Ingreso Total (USD)", f"{summary['ingreso_total_usd']:,}")
+    st.metric("Ingreso en Riesgo (USD)", f"{summary['ingreso_en_riesgo_usd']:,}")
+    st.metric("% Ingreso en Riesgo", f"{summary['pct_ingreso_en_riesgo']}%")
+    
+    st.write("### 🔥 Top SKUs fantasma por ingreso en riesgo")
+    df_sku = invisible_sales_by_sku(df_master_feat, top_n=20)
+    st.dataframe(df_sku, use_container_width=True)
+    
+    st.write("### 🏙️ Top ciudades con venta invisible")
+    df_city = invisible_sales_by_city(df_master_feat, top_n=15)
+    st.dataframe(df_city, use_container_width=True)
+    
+    st.write("### 🛒 Venta invisible por canal")
+    df_channel = invisible_sales_by_channel(df_master_feat)
+    st.dataframe(df_channel, use_container_width=True)
+    
+    st.write("### 🧾 Transacciones invisibles (auditoría)")
+    df_invisible_tx = get_invisible_transactions(df_master_feat, top_n=50)
+    st.dataframe(df_invisible_tx, use_container_width=True)
     
     st.divider()
 
@@ -982,6 +1018,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

@@ -785,22 +785,13 @@ else:
         stale_days_threshold=10  # puedes cambiarlo a 15, 45, etc
     )
 
-    df_feat, meta = add_operational_risk_features(df_master)
-    
-    risk_table = operational_risk_by_warehouse(df_feat, min_rows=20, blind_percentile=80)
-    
-    scatter_df = operational_risk_scatter_df(df_feat, min_rows=20, blind_percentile=80)
-
     
     if meta_ops.get("warnings"):
         for w in meta_ops["warnings"]:
             st.warning(f"⚠️ {w}")
     
-    risk_by_wh = operational_risk_by_warehouse(df_ops, min_rows=30)
+    risk_by_wh = operational_risk_by_warehouse(df_ops, min_rows=20, blind_percentile=80)
 
-
-    st.write("NaN dias_desde_revision:", df_feat["dias_desde_revision"].isna().mean())
-    st.write(df_feat[["Fecha_Venta","Ultima_Revision","dias_desde_revision"]].head(10))
 
     if risk_by_wh.empty:
         st.warning("⚠️ No hay suficientes datos por bodega para calcular riesgo (min_rows=30).")
@@ -833,7 +824,7 @@ else:
         # Scatter: revisión vs tickets
         # -----------------------------
         st.markdown("### 📌 Relación: días desde revisión vs tasa de tickets (por bodega)")
-        scatter_df = operational_risk_scatter_df(df_ops, min_rows=30)
+        scatter_df = operational_risk_scatter_df(df_ops, min_rows=20, blind_percentile=80)
     
         if scatter_df.empty:
             st.info("No hay datos suficientes para scatter.")
@@ -1080,6 +1071,8 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
+
 
 
 

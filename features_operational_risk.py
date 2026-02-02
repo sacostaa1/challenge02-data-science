@@ -15,8 +15,26 @@ def _find_col(df: pd.DataFrame, candidates: list[str]):
     return None
 
 
-def _to_datetime_safe(s: pd.Series):
-    return pd.to_datetime(s, errors="coerce")
+def _to_datetime_mixed(series: pd.Series) -> pd.Series:
+    """
+    Convierte fechas con formatos mixtos:
+    - dd/mm/yyyy (día primero)
+    - yyyy-mm-dd
+    - otros parseables
+    """
+    if series is None:
+        return pd.Series(dtype="datetime64[ns]")
+
+    s = series.astype(str).str.strip()
+
+    # intento 1: dayfirst=True (sirve para 29/07/2025)
+    dt1 = pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    # intento 2: normal (sirve para 2025-11-16)
+    dt2 = pd.to_datetime(s, errors="coerce", dayfirst=False)
+
+    # combinar: si dt1 es NaT, usar dt2
+    return dt1.fillna(dt2)
 
 
 def _normalize_yes_no(series: pd.Series) -> pd.Series:
@@ -53,8 +71,12 @@ def add_operational_risk_features(
     - ticket_soporte_bin (1 si Ticket_Soporte_Abierto == SI)
     - nps (numérico)
     - nps_bajo (1 si nps <= 6)
+    - bodega_origen_clean
 
-    Retorna: (df_out, meta)
+    Importante:
+    - Usa Fecha_Venta como referencia por fila.
+    - Si Ultima_Revision > Fecha_Venta (dato inconsistente), se corrige con clip(0)
+      en vez de convertir a NaN para no perder filas.
     """
     meta = {"warnings": []}
 
@@ -69,6 +91,7 @@ def add_operational_risk_features(
     col_last_review = _find_col(out, ["Ultima_Revision"])
     col_ticket = _find_col(out, ["Ticket_Soporte_Abierto"])
     col_nps = _find_col(out, ["Satisfaccion_NPS"])
+    col_fecha_venta = _find_col(out, ["Fecha_Venta"])
 
     # Validaciones
     if col_warehouse is None:
@@ -79,25 +102,27 @@ def add_operational_risk_features(
         meta["warnings"].append("No se encontró columna Ticket_Soporte_Abierto.")
     if col_nps is None:
         meta["warnings"].append("No se encontró columna Satisfaccion_NPS.")
+    if col_fecha_venta is None:
+        meta["warnings"].append("No se encontró columna Fecha_Venta (se usará reference_date o hoy).")
 
     # -----------------------------
-    # 1) dias_desde_revision (USANDO Fecha_Venta como referencia)
+    # 1) dias_desde_revision
     # -----------------------------
-    col_fecha_venta = _find_col(out, ["Fecha_Venta"])
-    
     if col_last_review is not None:
-        last_dt = _to_datetime_safe(out[col_last_review])
-    
-        # Si existe Fecha_Venta, úsala como referencia por fila
+        last_dt = _to_datetime_mixed(out[col_last_review])
+
+        # Caso ideal: usar Fecha_Venta por fila
         if col_fecha_venta is not None:
-            sale_dt = _to_datetime_safe(out[col_fecha_venta])
+            sale_dt = _to_datetime_mixed(out[col_fecha_venta])
+
             out["dias_desde_revision"] = (sale_dt - last_dt).dt.days
-    
-            # Si la revisión ocurre después de la venta (dato raro), lo marcamos NaN
-            out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
-    
+
+            # Corrección: si sale negativo por inconsistencias, lo dejamos en 0
+            out["dias_desde_revision"] = pd.to_numeric(out["dias_desde_revision"], errors="coerce")
+            out["dias_desde_revision"] = out["dias_desde_revision"].clip(lower=0)
+
         else:
-            # fallback: si no hay Fecha_Venta, usa hoy o reference_date
+            # fallback: usar reference_date o "hoy"
             if reference_date is None:
                 ref_dt = pd.Timestamp.today().normalize()
             else:
@@ -105,15 +130,23 @@ def add_operational_risk_features(
                 if pd.isna(ref_dt):
                     ref_dt = pd.Timestamp.today().normalize()
                     meta["warnings"].append("reference_date inválida, usando hoy().")
-    
+
             out["dias_desde_revision"] = (ref_dt - last_dt).dt.days
-            out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
-    
+            out["dias_desde_revision"] = pd.to_numeric(out["dias_desde_revision"], errors="coerce")
+            out["dias_desde_revision"] = out["dias_desde_revision"].clip(lower=0)
+
     else:
         out["dias_desde_revision"] = np.nan
 
     # -----------------------------
-    # 2) ticket_soporte_bin
+    # 2) revision_desactualizada
+    # -----------------------------
+    out["revision_desactualizada"] = (
+        pd.to_numeric(out["dias_desde_revision"], errors="coerce") >= stale_days_threshold
+    ).astype(int)
+
+    # -----------------------------
+    # 3) ticket_soporte_bin
     # -----------------------------
     if col_ticket is not None:
         out["ticket_soporte_bin"] = _normalize_yes_no(out[col_ticket])
@@ -121,7 +154,7 @@ def add_operational_risk_features(
         out["ticket_soporte_bin"] = np.nan
 
     # -----------------------------
-    # 3) NPS numérico + nps_bajo
+    # 4) NPS numérico + nps_bajo
     # -----------------------------
     if col_nps is not None:
         out["nps"] = pd.to_numeric(out[col_nps], errors="coerce")
@@ -131,7 +164,7 @@ def add_operational_risk_features(
     out["nps_bajo"] = (out["nps"] <= 6).astype(int)
 
     # -----------------------------
-    # 4) Warehouse clean
+    # 5) Warehouse clean
     # -----------------------------
     if col_warehouse is not None:
         out["bodega_origen_clean"] = out[col_warehouse].astype(str).str.strip().replace({"": "N/A"})
@@ -156,7 +189,7 @@ def operational_risk_by_warehouse(
     - pct_tickets
     - avg_nps
     - pct_nps_bajo
-    - score_riesgo_operativo (completo)
+    - score_riesgo_operativo
     - operando_a_ciegas (flag relativo por percentil)
 
     Score (más alto = más riesgo):
@@ -209,7 +242,7 @@ def operational_risk_by_warehouse(
     out["pct_tickets"] = (out["pct_tickets"] * 100).round(2)
     out["pct_nps_bajo"] = (out["pct_nps_bajo"] * 100).round(2)
 
-    # Normalización simple para días (0..1) dentro del ranking
+    # Normalización simple para días (0..1)
     d = out["avg_dias_desde_revision"].copy()
     d_min, d_max = float(d.min()), float(d.max())
     if d_max > d_min:
@@ -225,9 +258,7 @@ def operational_risk_by_warehouse(
         + (out["pct_nps_bajo"].fillna(0) / 100) * 0.15
     ).round(4)
 
-    # -----------------------------
-    # NUEVO: Operando a ciegas (criterio relativo por percentil)
-    # -----------------------------
+    # Operando a ciegas: percentil sobre avg_dias_desde_revision
     blind_percentile = int(blind_percentile)
     blind_percentile = max(0, min(100, blind_percentile))
 
@@ -240,7 +271,7 @@ def operational_risk_by_warehouse(
 
 
 # ============================================================
-# 3) Dataset para Scatter: revisión vs tickets vs satisfacción
+# 3) Dataset para Scatter
 # ============================================================
 def operational_risk_scatter_df(
     df: pd.DataFrame,
@@ -248,17 +279,15 @@ def operational_risk_scatter_df(
     blind_percentile: int = 80,
 ) -> pd.DataFrame:
     """
-    Devuelve una tabla por bodega lista para scatter:
+    Devuelve tabla por bodega lista para scatter:
     x = avg_dias_desde_revision
     y = pct_tickets
-    size/color = avg_nps o pct_nps_bajo
+    size/color = avg_nps
     """
     agg = operational_risk_by_warehouse(df, min_rows=min_rows, blind_percentile=blind_percentile)
     if agg.empty:
         return agg
 
-    # Para scatter: pct_tickets en escala 0..1 (si lo necesitas)
     agg["pct_tickets_frac"] = (agg["pct_tickets"] / 100.0).round(4)
     agg["pct_nps_bajo_frac"] = (agg["pct_nps_bajo"] / 100.0).round(4)
-
     return agg

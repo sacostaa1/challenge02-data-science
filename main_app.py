@@ -808,15 +808,20 @@ else:
         st.markdown("### 🏭 Ranking: bodegas operando a ciegas (Top 15)")
         cols_show = [
             "bodega_origen_clean",
-            "n",
+            "n_valid",
             "avg_dias_desde_revision",
             "pct_revision_desactualizada",
             "pct_tickets",
             "avg_nps",
             "pct_nps_bajo",
-            "score_riesgo_operativo"
+            "score_riesgo_operativo",
+            "operando_a_ciegas",
         ]
+        
+        cols_show = [c for c in cols_show if c in risk_by_wh.columns]
+        
         st.dataframe(risk_by_wh[cols_show].head(15), use_container_width=True)
+
     
         st.divider()
     
@@ -1071,6 +1076,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

@@ -783,6 +783,13 @@ else:
         df_ops_base,
         stale_days_threshold=30  # puedes cambiarlo a 15, 45, etc
     )
+
+    df_feat, meta = add_operational_risk_features(df_master)
+    
+    risk_table = operational_risk_by_warehouse(df_feat, min_rows=20, blind_percentile=80)
+    
+    scatter_df = operational_risk_scatter_df(df_feat, min_rows=20, blind_percentile=80)
+
     
     if meta_ops.get("warnings"):
         for w in meta_ops["warnings"]:
@@ -1068,6 +1075,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

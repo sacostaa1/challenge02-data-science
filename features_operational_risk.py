@@ -122,6 +122,7 @@ def add_operational_risk_features(
 
     
             out["dias_desde_revision"] = (ref_dt - last_dt).dt.days
+            out["dias_desde_revision"] = out["dias_desde_revision"].clip(lower=0)
             out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan
     
     else:

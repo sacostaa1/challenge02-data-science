@@ -21,6 +21,12 @@ from features_invisible_sales import (
     invisible_sales_by_city,
     get_invisible_transactions
 )
+from features_loyalty import (
+    add_loyalty_features,
+    category_loyalty_kpis,
+    category_paradox_ranking
+)
+
 
 
 st.set_page_config(page_title="Data Healthcheck Pro", layout="wide")
@@ -575,7 +581,7 @@ with tab_eda:
         else:
             st.info("ℹ️ No se puede agrupar por SKU porque no se detectó una columna SKU.")
 
-
+    st.divider()
     # ===========================
     # FEATURES LOGÍSTICAS (P2)
     # ===========================
@@ -630,7 +636,7 @@ with tab_eda:
         else:
             st.warning("⚠️ No se puede graficar ranking porque faltan columnas Ciudad_Destino y/o Bodega_Origen en kpis_zone.")
 
-
+    st.divider()
     # ===========================
     # Ventas invisibles (P3)
     # ===========================
@@ -679,147 +685,83 @@ with tab_eda:
     # ===========================
     # DIAGNÓSTICO DE FIDELIDAD (P4)
     # ===========================
-    st.subheader("🧾 Diagnóstico de Fidelidad (P4)")
-    st.caption("¿Existen categorías con alta disponibilidad (stock alto) pero sentimiento cliente negativo?")
+    st.header("4️⃣ Diagnóstico de Fidelidad: Stock alto pero sentimiento negativo")
 
-    # intentamos usar los datasets limpios cargados en la pestaña de limpieza
-    inv = inventario_clean if 'inventario_clean' in locals() else None
-    fb = feedback_clean if 'feedback_clean' in locals() else None
+if df_master is None or df_master.empty:
+    st.warning("⚠️ No hay Single Source of Truth disponible.")
+else:
+    df_loyal = add_loyalty_features(df_master)
 
-    if inv is None and fb is None:
-        st.warning("No hay datasets limpios de inventario ni feedback disponibles para este diagnóstico.")
+    cat_kpis = category_loyalty_kpis(df_loyal, min_rows=20)  # puedes ajustar
+    if cat_kpis.empty:
+        st.warning("⚠️ No hay suficientes datos por categoría para análisis (min_rows).")
     else:
-        # detectar columnas relevantes
-        def find_col_ci(df, candidates):
-            if df is None:
-                return None
-            for c in df.columns:
-                if c.lower() in [x.lower() for x in candidates]:
-                    return c
-            return None
+        paradox = category_paradox_ranking(cat_kpis)
 
-        stock_col = find_col_ci(inv, ["Stock_Actual", "stock_actual", "stock", "cantidad_stock"]) if inv is not None else None
-        cat_col = find_col_ci(inv, ["categoria", "categoria_producto", "categoria_producto" ]) if inv is not None else None
-        sku_inv = find_col_ci(inv, ["SKU", "sku", "Sku", "SKU_ID"]) if inv is not None else None
+        # -------------------------
+        # KPIs rápidos
+        # -------------------------
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Categorías analizadas", len(cat_kpis))
+        c2.metric("Stock promedio (global)", round(df_loyal["stock_actual_num"].mean(), 2))
+        c3.metric("% sentimiento negativo (global)", f"{round(df_loyal['sentimiento_negativo'].mean()*100, 2)}%")
+        c4.metric("Rating producto promedio", round(df_loyal["rating_producto_num"].mean(), 2))
 
-        sku_fb = find_col_ci(fb, ["SKU", "sku", "Sku", "SKU_ID"]) if fb is not None else None
-        nps_fb_col = find_col_ci(fb, ["satisfaccion_NPS", "satisfaccion_nps", "nps", "NPS"]) if fb is not None else None
+        st.subheader("📌 Ranking de paradojas (stock alto + mala percepción)")
+        st.dataframe(paradox.head(15), use_container_width=True)
 
-        # Preparar agregados inventario por categoría
-        inv_agg = None
-        if inv is not None and cat_col is not None and stock_col is not None:
-            inv_temp = inv.copy()
-            inv_temp[stock_col] = pd.to_numeric(inv_temp[stock_col], errors='coerce').fillna(0)
-            inv_agg = (
-                inv_temp.groupby(cat_col)[stock_col]
-                .agg(total_stock='sum', avg_stock='mean', n_items='count')
-                .reset_index()
-                .sort_values('total_stock', ascending=False)
-            )
+        # -------------------------
+        # Gráfica 1: Stock promedio vs Rating producto por categoría
+        # -------------------------
+        st.subheader("📊 Stock Promedio vs Rating Producto (por Categoría)")
 
-        # Preparar agregados feedback (por SKU o categoría si es posible)
-        fb_agg = None
-        if fb is not None:
-            fb_temp = fb.copy()
-            if nps_fb_col is not None:
-                fb_temp['nps_num'] = pd.to_numeric(fb_temp[nps_fb_col], errors='coerce')
-            else:
-                fb_temp['nps_num'] = pd.NA
+        plot_df = cat_kpis.sort_values("stock_prom", ascending=False).head(15).copy()
 
-            # ratings
-            rating_prod_col = find_col_ci(fb_temp, ["Rating_Producto", "rating_producto", "Rating_Producto", "rating"]) 
-            rating_log_col = find_col_ci(fb_temp, ["Rating_Logistica", "rating_logistica", "rating_logistica"]) 
-            if rating_prod_col is not None:
-                fb_temp['rating_producto_num'] = pd.to_numeric(fb_temp[rating_prod_col], errors='coerce')
-            else:
-                fb_temp['rating_producto_num'] = pd.NA
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.scatter(plot_df["stock_prom"], plot_df["rating_producto_prom"])
+        ax.set_xlabel("Stock promedio")
+        ax.set_ylabel("Rating producto promedio")
+        ax.set_title("Categorías: Stock alto vs Rating bajo (alerta de fidelidad)")
+        st.pyplot(fig, use_container_width=True)
 
-            if rating_log_col is not None:
-                fb_temp['rating_logistica_num'] = pd.to_numeric(fb_temp[rating_log_col], errors='coerce')
-            else:
-                fb_temp['rating_logistica_num'] = pd.NA
+        # -------------------------
+        # Gráfica 2: % sentimiento negativo por categoría (Top 15)
+        # -------------------------
+        st.subheader("📉 Top categorías con mayor % de sentimiento negativo")
 
-            # si tenemos SKU en ambos y categoria en inventario, join para obtener categoria por feedback
-            if sku_fb is not None and sku_inv is not None and inv is not None and cat_col is not None:
-                merged = fb_temp.merge(inv[[sku_inv, cat_col]].drop_duplicates(), left_on=sku_fb, right_on=sku_inv, how='left')
-                grp = merged.groupby(cat_col).agg(
-                    n_feedback=('nps_num','count'),
-                    avg_nps=('nps_num','mean'),
-                    avg_rating_producto=('rating_producto_num','mean'),
-                    avg_rating_logistica=('rating_logistica_num','mean')
-                ).reset_index()
-                pct = merged.groupby(cat_col)['nps_num'].apply(lambda x: (x<=6).mean() if x.notna().any() else np.nan).reset_index(name='pct_nps_bajo')
-                fb_agg = grp.merge(pct, on=cat_col, how='left')
-                if 'pct_nps_bajo' in fb_agg.columns:
-                    fb_agg['pct_nps_bajo'] = (fb_agg['pct_nps_bajo'] * 100).round(2)
-            else:
-                # fallback: agregamos por SKU si no hay categoria
-                if sku_fb is not None:
-                    fb_agg = (
-                        fb_temp.groupby(sku_fb)
-                        .agg(n_feedback=('nps_num','count'), avg_nps=('nps_num','mean'))
-                        .reset_index()
-                    )
+        plot_df2 = cat_kpis.sort_values("pct_sentimiento_negativo", ascending=False).head(15)
+        chart_series = plot_df2.set_index("Categoria")["pct_sentimiento_negativo"]
 
-        # ------------------ GRAFICA 1: Avg NPS por categoria ------------------
-        if inv_agg is not None and fb_agg is not None and cat_col in inv_agg.columns and cat_col in fb_agg.columns:
-            merged_cat = inv_agg.merge(fb_agg, on=cat_col, how='left')
-            merged_cat['avg_nps'] = pd.to_numeric(merged_cat.get('avg_nps', pd.Series([np.nan]*len(merged_cat))), errors='coerce')
+        st.bar_chart(chart_series)
 
-            # permitir elegir métrica de sentimiento para graficar
-            metrics_available = []
-            if 'avg_nps' in merged_cat.columns:
-                metrics_available.append(('avg_nps','Satisfacción NPS'))
-            if 'avg_rating_producto' in merged_cat.columns:
-                metrics_available.append(('avg_rating_producto','Rating Producto'))
-            if 'avg_rating_logistica' in merged_cat.columns:
-                metrics_available.append(('avg_rating_logistica','Rating Logística'))
+        # -------------------------
+        # Gráfica 3: Score paradoja (Top 15)
+        # -------------------------
+        st.subheader("🔥 Score de Paradoja (Top 15)")
+        score_series = paradox.head(15).set_index("Categoria")["score_paradoja"]
+        st.bar_chart(score_series)
 
-            chosen_label = 'avg_nps'
-            sel_label = 'Satisfacción NPS'
-            if metrics_available:
-                opts = [lab for (_,lab) in metrics_available]
-                sel_label = st.selectbox('Métrica de sentimiento a graficar', opts, index=0)
-                label_map = {lab:col for (col,lab) in metrics_available}
-                chosen_label = label_map.get(sel_label, 'avg_nps')
+        # -------------------------
+        # Tabla soporte: categorías con stock alto y rating bajo
+        # -------------------------
+        st.subheader("🧾 Categorías con stock alto y rating bajo (regla simple)")
+        stock_threshold = cat_kpis["stock_prom"].quantile(0.75)
+        rating_threshold = 3.0
 
-            st.markdown("**1) Promedio de Sentimiento por Categoría vs Stock**")
-            fig1 = px.bar(
-                merged_cat.sort_values(chosen_label, ascending=True),
-                x=cat_col,
-                y=chosen_label,
-                color='total_stock',
-                color_continuous_scale='RdYlGn_r',
-                labels={cat_col: 'Categoría', chosen_label: sel_label, 'total_stock': 'Stock total'},
-                title=f'{sel_label} por Categoría (color = stock total)'
-            )
-            fig1.update_layout(xaxis={'categoryorder':'total descending'}, height=450)
-            st.plotly_chart(fig1, use_container_width=True)
+        alert_df = cat_kpis[
+            (cat_kpis["stock_prom"] >= stock_threshold) &
+            (cat_kpis["rating_producto_prom"] <= rating_threshold)
+        ].sort_values(["stock_prom", "rating_producto_prom"], ascending=[False, True])
 
-            # Barra auxiliar: stock por categoria
-            st.markdown("**2) Stock total por Categoría**")
-            fig2 = px.bar(merged_cat.sort_values('total_stock', ascending=False), x=cat_col, y='total_stock', title='Stock total por Categoría')
-            fig2.update_layout(height=350)
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # Scatter: stock vs métrica seleccionada
-            st.markdown(f"**3) Stock vs {sel_label} (bubble size = n_feedback)**")
-            merged_cat['n_feedback'] = merged_cat.get('n_feedback', merged_cat.get('n_items', 0)).fillna(0)
-            fig3 = px.scatter(
-                merged_cat,
-                x='total_stock',
-                y=chosen_label,
-                size='n_feedback',
-                hover_name=cat_col,
-                title=f'Stock total vs {sel_label} por Categoría',
-                labels={'total_stock':'Stock total', chosen_label:sel_label}
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-
-            st.markdown("**Interpretación rápida:** categorías con alto stock y sentimiento (NPS/Rating) bajo aparecen con alta stock a la derecha y valores de sentimiento bajos. Esas categorías son candidatas a revisar: calidad de producto, desajuste entre expectativas y descripción, o problemas logísticos/precio.")
-
+        if alert_df.empty:
+            st.success("✅ No se detectan categorías con stock alto y rating bajo bajo estos umbrales.")
         else:
-            st.info("No se pudieron construir las gráficas por falta de columnas comunes (categoria/stock en inventario y NPS en feedback). Si existe SKU en ambos datasets, súbelos para emparejar datos.")
+            st.dataframe(alert_df, use_container_width=True)
+
+        st.caption(
+            "Interpretación: Si hay mucho stock pero la percepción es mala, "
+            "podría ser problema de calidad, sobrecosto, o mala experiencia del producto."
+        )
 
 
     st.divider()
@@ -1035,6 +977,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

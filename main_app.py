@@ -777,6 +777,7 @@ else:
     st.subheader("🧯 Storytelling de Riesgo Operativo (P5)")
     st.caption("Relación entre antigüedad de revisión de stock vs tasa de tickets y efecto en satisfacción (NPS).")
     
+    
     df_ops_base = df_eda.copy()
     
     df_ops, meta_ops = add_operational_risk_features(
@@ -796,7 +797,11 @@ else:
             st.warning(f"⚠️ {w}")
     
     risk_by_wh = operational_risk_by_warehouse(df_ops, min_rows=30)
-    
+
+
+    st.write("NaN dias_desde_revision:", df_feat["dias_desde_revision"].isna().mean())
+    st.write(df_feat[["Fecha_Venta","Ultima_Revision","dias_desde_revision"]].head(10))
+
     if risk_by_wh.empty:
         st.warning("⚠️ No hay suficientes datos por bodega para calcular riesgo (min_rows=30).")
     else:
@@ -1075,6 +1080,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

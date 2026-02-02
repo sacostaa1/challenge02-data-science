@@ -98,13 +98,28 @@ def add_operational_risk_features(
     
         else:
             # fallback: si no hay Fecha_Venta, usa hoy o reference_date
+            col_fecha_venta = _find_col(out, ["Fecha_Venta"])
+
+            # referencia dinámica = fecha más reciente de venta
             if reference_date is None:
-                ref_dt = pd.Timestamp.today().normalize()
+                if col_fecha_venta is not None:
+                    venta_dt = _to_datetime_safe(out[col_fecha_venta])
+                    ref_dt = venta_dt.max()
+            
+                    if pd.isna(ref_dt):
+                        ref_dt = pd.Timestamp.today().normalize()
+                        meta["warnings"].append("No se pudo calcular ref_dt desde Fecha_Venta, usando hoy().")
+                    else:
+                        ref_dt = pd.Timestamp(ref_dt).normalize()
+                else:
+                    ref_dt = pd.Timestamp.today().normalize()
+                    meta["warnings"].append("No existe Fecha_Venta, usando hoy().")
             else:
                 ref_dt = pd.to_datetime(reference_date, errors="coerce")
                 if pd.isna(ref_dt):
                     ref_dt = pd.Timestamp.today().normalize()
                     meta["warnings"].append("reference_date inválida, usando hoy().")
+
     
             out["dias_desde_revision"] = (ref_dt - last_dt).dt.days
             out.loc[out["dias_desde_revision"] < 0, "dias_desde_revision"] = np.nan

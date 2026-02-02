@@ -26,6 +26,11 @@ from features_loyalty import (
     category_loyalty_kpis,
     category_paradox_ranking
 )
+from features_operational_risk import (
+    add_operational_risk_features,
+    operational_risk_by_warehouse,
+    operational_risk_scatter_df
+)
 
 
 
@@ -766,6 +771,92 @@ else:
 
     st.divider()
 
+    # ===========================
+    # PREGUNTA 5: RIESGO OPERATIVO
+    # ===========================
+    st.subheader("🧯 Storytelling de Riesgo Operativo (P5)")
+    st.caption("Relación entre antigüedad de revisión de stock vs tasa de tickets y efecto en satisfacción (NPS).")
+    
+    df_ops_base = df_eda.copy()
+    
+    df_ops, meta_ops = add_operational_risk_features(
+        df_ops_base,
+        stale_days_threshold=30  # puedes cambiarlo a 15, 45, etc
+    )
+    
+    if meta_ops.get("warnings"):
+        for w in meta_ops["warnings"]:
+            st.warning(f"⚠️ {w}")
+    
+    risk_by_wh = operational_risk_by_warehouse(df_ops, min_rows=30)
+    
+    if risk_by_wh.empty:
+        st.warning("⚠️ No hay suficientes datos por bodega para calcular riesgo (min_rows=30).")
+    else:
+        # KPIs rápidos
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Bodegas analizadas", f"{risk_by_wh.shape[0]}")
+        c2.metric("Mayor score riesgo", f"{risk_by_wh['score_riesgo_operativo'].max():.4f}")
+        c3.metric("Mayor % tickets", f"{risk_by_wh['pct_tickets'].max():.2f}%")
+        c4.metric("Peor NPS promedio", f"{risk_by_wh['avg_nps'].min():.2f}")
+    
+        st.divider()
+    
+        st.markdown("### 🏭 Ranking: bodegas operando a ciegas (Top 15)")
+        cols_show = [
+            "bodega_origen_clean",
+            "n",
+            "avg_dias_desde_revision",
+            "pct_revision_desactualizada",
+            "pct_tickets",
+            "avg_nps",
+            "pct_nps_bajo",
+            "score_riesgo_operativo"
+        ]
+        st.dataframe(risk_by_wh[cols_show].head(15), use_container_width=True)
+    
+        st.divider()
+    
+        # -----------------------------
+        # Scatter: revisión vs tickets
+        # -----------------------------
+        st.markdown("### 📌 Relación: días desde revisión vs tasa de tickets (por bodega)")
+        scatter_df = operational_risk_scatter_df(df_ops, min_rows=30)
+    
+        if scatter_df.empty:
+            st.info("No hay datos suficientes para scatter.")
+        else:
+            import plotly.express as px
+    
+            fig = px.scatter(
+                scatter_df,
+                x="avg_dias_desde_revision",
+                y="pct_tickets",
+                size="n",
+                hover_name="bodega_origen_clean",
+                color="avg_nps",
+                title="Bodegas: antigüedad de revisión vs % tickets (color = NPS promedio)",
+                labels={
+                    "avg_dias_desde_revision": "Días promedio desde última revisión",
+                    "pct_tickets": "% transacciones con ticket",
+                    "avg_nps": "NPS promedio",
+                    "n": "# transacciones"
+                }
+            )
+            fig.update_layout(height=450)
+            st.plotly_chart(fig, use_container_width=True)
+    
+        st.divider()
+    
+        # -----------------------------
+        # Bar chart: Score riesgo
+        # -----------------------------
+        st.markdown("### 🚨 Score de riesgo operativo (Top 15)")
+        top_risk = risk_by_wh.head(15).set_index("bodega_origen_clean")["score_riesgo_operativo"]
+        st.bar_chart(top_risk)
+
+    st.divider()
+
     # -------------------------
     # Comparación por canal (Online vs otros)
     # -------------------------
@@ -977,6 +1068,7 @@ else:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 

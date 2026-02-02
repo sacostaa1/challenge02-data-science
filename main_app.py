@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import matplotlib.pyplot as plt
 
 from clean_inventario import clean_inventario_central
 from clean_transacciones import clean_transacciones_logistica
@@ -656,6 +657,22 @@ with tab_eda:
     st.write("### 🧾 Transacciones invisibles (auditoría)")
     df_invisible_tx = get_invisible_transactions(df_master_feat, top_n=50)
     st.dataframe(df_invisible_tx, use_container_width=True)
+
+    summary = invisible_sales_summary(df_master_feat)
+
+    ingreso_total = summary["ingreso_total_usd"]
+    ingreso_riesgo = summary["ingreso_en_riesgo_usd"]
+    ingreso_normal = ingreso_total - ingreso_riesgo
+    
+    # Pie chart
+    labels = ["Ingreso normal (SKU en inventario)", "Ingreso en riesgo (SKU fantasma)"]
+    values = [ingreso_normal, ingreso_riesgo]
+    
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
+    ax.set_title("Distribución de Ingresos: Normal vs Venta Invisible")
+    
+    st.pyplot(fig, use_container_width=True)
     
     st.divider()
 
@@ -1018,6 +1035,7 @@ with tab_eda:
 
     st.subheader("📄 Vista previa del dataset filtrado (EDA)")
     st.dataframe(df_dash.head(100), use_container_width=True)
+
 
 
 
